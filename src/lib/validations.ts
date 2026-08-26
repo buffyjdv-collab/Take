@@ -128,32 +128,35 @@ export const tableSchema = z.object({
 })
 
 // Admin: staff
+export const ALL_ROLES = [
+  'SUPER_ADMIN',
+  'RESTAURANT_OWNER',
+  'MANAGER',
+  'KITCHEN_STAFF',
+  'WAITER',
+  'CASHIER',
+] as const
+
+export const NON_SUPER_ROLES = [
+  'RESTAURANT_OWNER',
+  'MANAGER',
+  'KITCHEN_STAFF',
+  'WAITER',
+  'CASHIER',
+] as const
+
 export const staffCreateSchema = z.object({
   name: z.string().min(1).max(120),
   email: z.string().email(),
   password: z.string().min(6).max(120),
-  role: z.enum([
-    'RESTAURANT_OWNER',
-    'MANAGER',
-    'KITCHEN_STAFF',
-    'WAITER',
-    'CASHIER',
-  ]),
+  role: z.enum(ALL_ROLES),
   branchId: z.string().optional().nullable(),
   phone: z.string().max(20).optional(),
 })
 
 export const staffUpdateSchema = z.object({
   name: z.string().min(1).max(120).optional(),
-  role: z
-    .enum([
-      'RESTAURANT_OWNER',
-      'MANAGER',
-      'KITCHEN_STAFF',
-      'WAITER',
-      'CASHIER',
-    ])
-    .optional(),
+  role: z.enum(ALL_ROLES).optional(),
   active: z.boolean().optional(),
   branchId: z.string().optional().nullable(),
   phone: z.string().max(20).optional(),

@@ -24,11 +24,14 @@ import {
 } from '@/components/ui/dialog'
 import { useAdminStaff, api } from '@/hooks/api'
 import { useQueryClient } from '@tanstack/react-query'
-import { Plus, Pencil, Trash2 } from 'lucide-react'
+import { useSession } from 'next-auth/react'
+import { Plus, Pencil, Trash2, ShieldCheck } from 'lucide-react'
 import { toast } from 'sonner'
 import { LoadingSpinner, EmptyState, ButtonWithLoading } from '@/components/restaurant/loading-states'
 import { ConfirmDialog } from '@/components/restaurant/confirm-dialog'
-import { ROLE_LABELS } from '@/lib/auth'
+import { ROLE_LABELS, PERMISSIONS } from '@/lib/auth'
+import { ALL_ROLES, NON_SUPER_ROLES } from '@/lib/validations'
+import { hasPermission, canAccessRole } from '@/lib/auth'
 
 const ROLE_TINT: Record<string, string> = {
   SUPER_ADMIN: 'bg-purple-100 text-purple-700',
@@ -39,18 +42,28 @@ const ROLE_TINT: Record<string, string> = {
   CASHIER: 'bg-slate-100 text-slate-700',
 }
 
+/** Roles that the current user is allowed to assign */
+function getAssignableRoles(myRole: string): readonly string[] {
+  if (myRole === 'SUPER_ADMIN') return ALL_ROLES
+  return NON_SUPER_ROLES.filter((r) => canAccessRole(myRole, r))
+}
+
 export function StaffManager() {
   const { data, isLoading } = useAdminStaff()
+  const { data: session } = useSession()
   const qc = useQueryClient()
   const [editing, setEditing] = useState<any | null>(null)
   const [open, setOpen] = useState(false)
+
+  const myRole = ((session?.user as any)?.role as string) || ''
+  const assignableRoles = getAssignableRoles(myRole)
 
   const handleNew = () => {
     setEditing({
       name: '',
       email: '',
       password: '',
-      role: 'WAITER',
+      role: assignableRoles[0] || 'WAITER',
       phone: '',
       active: true,
     })
@@ -135,55 +148,74 @@ export function StaffManager() {
                   <th className="p-3">Name</th>
                   <th className="p-3">Email</th>
                   <th className="p-3">Role</th>
+                  <th className="p-3">Permissions</th>
                   <th className="p-3">Active</th>
                   <th className="p-3">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {data.map((u: any) => (
-                  <tr key={u.id} className="border-b last:border-0 hover:bg-slate-50">
-                    <td className="p-3 font-medium">{u.name}</td>
-                    <td className="p-3 text-muted-foreground">{u.email}</td>
-                    <td className="p-3">
-                      <Badge variant="outline" className={ROLE_TINT[u.role]}>
-                        {ROLE_LABELS[u.role] || u.role}
-                      </Badge>
-                    </td>
-                    <td className="p-3">
-                      <Switch
-                        checked={u.active}
-                        onCheckedChange={() => handleToggleActive(u)}
-                      />
-                    </td>
-                    <td className="p-3">
-                      <div className="flex gap-1">
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-7 w-7"
-                          onClick={() => {
-                            setEditing(u)
-                            setOpen(true)
-                          }}
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </Button>
-                        <ConfirmDialog
-                          trigger={
-                            <Button size="icon" variant="ghost" className="h-7 w-7 text-red-600">
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          }
-                          title={`Remove ${u.name}?`}
-                          description="This will deactivate the user. Their audit history will be preserved."
-                          confirmLabel="Remove"
-                          variant="destructive"
-                          onConfirm={() => handleDelete(u)}
+                {data.map((u: any) => {
+                  const userPerms = Object.entries(PERMISSIONS)
+                    .filter(([, roles]) => roles.includes(u.role))
+                    .map(([perm]) => perm.replace(/\./g, ' ').replace(/_/g, ' '))
+                  return (
+                    <tr key={u.id} className="border-b last:border-0 hover:bg-slate-50">
+                      <td className="p-3 font-medium">{u.name}</td>
+                      <td className="p-3 text-muted-foreground">{u.email}</td>
+                      <td className="p-3">
+                        <Badge variant="outline" className={ROLE_TINT[u.role] || ''}>
+                          {u.role === 'SUPER_ADMIN' && <ShieldCheck className="mr-1 h-3 w-3" />}
+                          {ROLE_LABELS[u.role] || u.role}
+                        </Badge>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex max-w-[200px] flex-wrap gap-1">
+                          {userPerms.slice(0, 4).map((p) => (
+                            <span key={p} className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
+                              {p}
+                            </span>
+                          ))}
+                          {userPerms.length > 4 && (
+                            <span className="text-[10px] text-muted-foreground">+{userPerms.length - 4}</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <Switch
+                          checked={u.active}
+                          onCheckedChange={() => handleToggleActive(u)}
                         />
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="p-3">
+                        <div className="flex gap-1">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7"
+                            onClick={() => {
+                              setEditing(u)
+                              setOpen(true)
+                            }}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <ConfirmDialog
+                            trigger={
+                              <Button size="icon" variant="ghost" className="h-7 w-7 text-red-600">
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            }
+                            title={`Remove ${u.name}?`}
+                            description="This will deactivate the user. Their audit history will be preserved."
+                            confirmLabel="Remove"
+                            variant="destructive"
+                            onConfirm={() => handleDelete(u)}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -224,16 +256,35 @@ export function StaffManager() {
               </div>
               <div>
                 <Label>Role</Label>
-                <Select value={editing.role} onValueChange={(v) => setEditing({ ...editing, role: v })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                <Select
+                  value={editing.role}
+                  onValueChange={(v) => setEditing({ ...editing, role: v })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select role" />
+                  </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="RESTAURANT_OWNER">Restaurant Owner</SelectItem>
-                    <SelectItem value="MANAGER">Manager</SelectItem>
-                    <SelectItem value="KITCHEN_STAFF">Kitchen Staff</SelectItem>
-                    <SelectItem value="WAITER">Waiter</SelectItem>
-                    <SelectItem value="CASHIER">Cashier</SelectItem>
+                    {assignableRoles.map((r) => (
+                      <SelectItem key={r} value={r}>
+                        {r === 'SUPER_ADMIN' && '🛡️ '}{ROLE_LABELS[r] || r}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
+                {editing.role && (
+                  <div className="mt-2 rounded-lg border bg-slate-50 p-2">
+                    <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">Permissions for {ROLE_LABELS[editing.role] || editing.role}</p>
+                    <div className="flex flex-wrap gap-1">
+                      {Object.entries(PERMISSIONS)
+                        .filter(([, roles]) => roles.includes(editing.role))
+                        .map(([perm]) => (
+                          <span key={perm} className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-medium text-orange-700">
+                            {perm.replace(/\./g, ' ').replace(/_/g, ' ')}
+                          </span>
+                        ))}
+                    </div>
+                  </div>
+                )}
               </div>
               <div>
                 <Label>Phone (optional)</Label>
