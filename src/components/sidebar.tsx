@@ -53,7 +53,6 @@ const NAV: NavItem[] = [
   { key: 'billing', label: 'Billing', icon: Receipt, permission: 'billing.manage', group: 'restaurant' },
   { key: 'reports', label: 'Reports', icon: BarChart3, permission: 'reports.view', group: 'restaurant' },
   { key: 'staff', label: 'Staff', icon: Users, permission: 'staff.manage', group: 'restaurant' },
-  { key: 'staff', label: 'yogesh', icon: Users, permission: 'staff.manage', group: 'restaurant' },
   { key: 'settings', label: 'Settings', icon: Settings, permission: 'settings.manage', group: 'restaurant' },
 ]
 
