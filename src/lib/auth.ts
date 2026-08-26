@@ -75,23 +75,28 @@ export const authOptions: NextAuthOptions = {
       },
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) return null
-        const user = await db.user.findUnique({
-          where: { email: credentials.email.toLowerCase() },
-          include: { restaurant: true, branch: true },
-        })
-        if (!user || !user.active) return null
-        const valid = await bcrypt.compare(credentials.password, user.passwordHash)
-        if (!valid) return null
-        return {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          role: user.role,
-          restaurantId: user.restaurantId,
-          branchId: user.branchId,
-          restaurantName: user.restaurant?.name,
-          restaurantSlug: user.restaurant?.slug,
-        } as any
+        try {
+          const user = await db.user.findUnique({
+            where: { email: credentials.email.toLowerCase() },
+            include: { restaurant: true, branch: true },
+          })
+          if (!user || !user.active) return null
+          const valid = await bcrypt.compare(credentials.password, user.passwordHash)
+          if (!valid) return null
+          return {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            role: user.role,
+            restaurantId: user.restaurantId,
+            branchId: user.branchId,
+            restaurantName: user.restaurant?.name,
+            restaurantSlug: user.restaurant?.slug,
+          } as any
+        } catch (err) {
+          console.error('[auth] authorize error:', err)
+          return null
+        }
       },
     }),
   ],
