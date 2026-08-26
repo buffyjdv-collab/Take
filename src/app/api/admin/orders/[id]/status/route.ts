@@ -14,6 +14,7 @@ export const dynamic = 'force-dynamic'
 
 // PATCH /api/admin/orders/[id]/status
 const VALID_TRANSITIONS: Record<string, string[]> = {
+  PENDING_PAYMENT: ['NEW', 'ACCEPTED', 'CANCELLED'],
   NEW: ['ACCEPTED', 'CANCELLED'],
   ACCEPTED: ['PREPARING', 'CANCELLED'],
   PREPARING: ['READY', 'CANCELLED'],

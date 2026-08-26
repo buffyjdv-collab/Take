@@ -415,7 +415,10 @@ model Order {
   branchId      String?
   tableId       String
   customerId    String?
-  // Status: NEW | ACCEPTED | PREPARING | READY | SERVED | COMPLETED | CANCELLED
+  // Status: PENDING_PAYMENT | NEW | ACCEPTED | PREPARING | READY | SERVED | COMPLETED | CANCELLED
+  // PENDING_PAYMENT = customer placed the order but hasn't paid yet (pre-payment mode).
+  //   The order is hidden from the kitchen/orders module until payment is confirmed,
+  //   at which point it transitions to NEW and becomes visible for acceptance.
   status        String   @default("NEW")
   // Payment status: PENDING | PROCESSING | PAID | FAILED | REFUNDED
   paymentStatus String   @default("PENDING")
@@ -439,6 +442,13 @@ model Order {
   postPaymentRequested Boolean  @default(false)
   prePaymentRequestedAt  DateTime?
   postPaymentRequestedAt DateTime?
+
+  // Who marked a CASH payment as received (waiter / owner / manager / cashier).
+  // When a cash payment is collected, the user's id + name snapshot are stored
+  // so the payments report can attribute the collection to a specific person.
+  cashReceivedById   String?
+  cashReceivedByName String?
+  cashReceivedAt     DateTime?
 
   // Pricing (server-validated)
   subtotal      Float    @default(0)

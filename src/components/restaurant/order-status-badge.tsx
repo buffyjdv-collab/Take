@@ -6,6 +6,11 @@ const MAP: Record<
   OrderStatus,
   { label: string; className: string }
 > = {
+  PENDING_PAYMENT: {
+    label: 'Awaiting Payment',
+    className:
+      'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-100',
+  },
   NEW: {
     label: 'New',
     className:

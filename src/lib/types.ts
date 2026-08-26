@@ -44,6 +44,7 @@ export type Role =
   | 'CASHIER'
 
 export type OrderStatus =
+  | 'PENDING_PAYMENT'
   | 'NEW'
   | 'ACCEPTED'
   | 'PREPARING'

@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogFooter,
+  DialogDescription,
 } from '@/components/ui/dialog'
 import {
   Select,
@@ -22,6 +23,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
+import { ConfirmDialog } from '@/components/restaurant/confirm-dialog'
 import {
   Building2,
   Search,
@@ -30,9 +33,11 @@ import {
   Pause,
   Play,
   Eye,
+  Pencil,
   Trash2,
   ExternalLink,
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
   Clock,
 } from 'lucide-react'
@@ -45,6 +50,7 @@ interface Tenant {
   slug: string
   name: string
   tagline?: string
+  address?: string
   city?: string
   phone: string
   email?: string
@@ -74,6 +80,8 @@ export function PlatformRestaurantsManager() {
   const [createOpen, setCreateOpen] = useState(false)
   const [suspendTarget, setSuspendTarget] = useState<Tenant | null>(null)
   const [detailTarget, setDetailTarget] = useState<Tenant | null>(null)
+  const [editTarget, setEditTarget] = useState<Tenant | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Tenant | null>(null)
   const qc = useQueryClient()
 
   const { data: tenants, isLoading } = useQuery({
@@ -113,6 +121,24 @@ export function PlatformRestaurantsManager() {
       qc.invalidateQueries({ queryKey: ['platform-metrics'] })
     },
     onError: () => toast.error('Failed to activate tenant'),
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`/api/platform/restaurants/${id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}))
+        throw new Error(json.error || 'Failed to delete tenant')
+      }
+      return res.json()
+    },
+    onSuccess: () => {
+      toast.success('Tenant deleted')
+      qc.invalidateQueries({ queryKey: ['platform-tenants'] })
+      qc.invalidateQueries({ queryKey: ['platform-metrics'] })
+      setDeleteTarget(null)
+    },
+    onError: (err: Error) => toast.error(err.message || 'Failed to delete tenant'),
   })
 
   const filtered = (tenants || []).filter((t) => {
@@ -237,6 +263,23 @@ export function PlatformRestaurantsManager() {
                       <Eye className="mr-1 h-3.5 w-3.5" />
                       View
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setEditTarget(t)}
+                    >
+                      <Pencil className="mr-1 h-3.5 w-3.5" />
+                      Edit
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="border-red-200 text-red-700 hover:bg-red-50"
+                      onClick={() => setDeleteTarget(t)}
+                    >
+                      <Trash2 className="mr-1 h-3.5 w-3.5" />
+                      Delete
+                    </Button>
                     {t.subscriptionStatus === 'SUSPENDED' ? (
                       <Button
                         variant="outline"
@@ -281,7 +324,58 @@ export function PlatformRestaurantsManager() {
       />
 
       {/* Detail dialog */}
-      <TenantDetailDialog tenant={detailTarget} onClose={() => setDetailTarget(null)} />
+      <TenantDetailDialog
+        tenant={detailTarget}
+        onClose={() => setDetailTarget(null)}
+        onEdit={(t) => {
+          setDetailTarget(null)
+          setEditTarget(t)
+        }}
+      />
+
+      {/* Edit dialog */}
+      {editTarget && (
+        <EditTenantDialog
+          key={editTarget.id}
+          tenant={editTarget}
+          onClose={() => setEditTarget(null)}
+        />
+      )}
+
+      {/* Delete confirmation */}
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(v) => !v && setDeleteTarget(null)}
+        title={deleteTarget ? `Delete ${deleteTarget.name}?` : ''}
+        description={
+          deleteTarget ? (
+            <div className="space-y-2 text-sm">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+                <p>
+                  This will <span className="font-semibold text-red-700">permanently delete</span>{' '}
+                  <strong>{deleteTarget.name}</strong> and cascade-delete <span className="font-semibold">all</span> of
+                  its data. This action cannot be undone.
+                </p>
+              </div>
+              <ul className="ml-6 list-disc text-xs text-muted-foreground">
+                <li>{deleteTarget.counts.orders} orders &amp; all order items / modifiers</li>
+                <li>{deleteTarget.counts.menuItems} menu items, categories &amp; modifier groups</li>
+                <li>{deleteTarget.counts.tables} tables &amp; QR codes</li>
+                <li>{deleteTarget.counts.users} staff / user accounts</li>
+                <li>{deleteTarget.counts.branches} branches</li>
+                <li>Payments, invoices, customers, service requests, settings, audit logs</li>
+              </ul>
+            </div>
+          ) : undefined
+        }
+        confirmLabel="Delete tenant"
+        variant="destructive"
+        onConfirm={() => {
+          if (!deleteTarget) return
+          deleteMutation.mutate(deleteTarget.id)
+        }}
+      />
     </div>
   )
 }
@@ -525,7 +619,15 @@ function SuspendDialog({
   )
 }
 
-function TenantDetailDialog({ tenant, onClose }: { tenant: Tenant | null; onClose: () => void }) {
+function TenantDetailDialog({
+  tenant,
+  onClose,
+  onEdit,
+}: {
+  tenant: Tenant | null
+  onClose: () => void
+  onEdit: (t: Tenant) => void
+}) {
   if (!tenant) return null
   const plan = PLANS[tenant.plan as keyof typeof PLANS]
   return (
@@ -577,6 +679,13 @@ function TenantDetailDialog({ tenant, onClose }: { tenant: Tenant | null; onClos
             <ExternalLink className="mr-2 h-4 w-4" />
             View menu
           </Button>
+          <Button
+            className="bg-orange-600 hover:bg-orange-700"
+            onClick={() => onEdit(tenant)}
+          >
+            <Pencil className="mr-2 h-4 w-4" />
+            Edit
+          </Button>
           <Button onClick={onClose}>Close</Button>
         </DialogFooter>
       </DialogContent>
@@ -590,5 +699,183 @@ function Detail({ label, value }: { label: string; value: string }) {
       <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
       <p className="text-sm font-medium">{value}</p>
     </div>
+  )
+}
+
+interface EditForm {
+  name: string
+  tagline: string
+  address: string
+  city: string
+  phone: string
+  email: string
+  plan: string
+  subscriptionStatus: string
+  isOpen: boolean
+  suspendReason: string
+}
+
+function EditTenantDialog({ tenant, onClose }: { tenant: Tenant; onClose: () => void }) {
+  const qc = useQueryClient()
+  const [form, setForm] = useState<EditForm>({
+    name: tenant.name || '',
+    tagline: tenant.tagline || '',
+    address: tenant.address || '',
+    city: tenant.city || '',
+    phone: tenant.phone || '',
+    email: tenant.email || '',
+    plan: tenant.plan,
+    subscriptionStatus: tenant.subscriptionStatus,
+    isOpen: tenant.isOpen,
+    suspendReason: tenant.suspendedReason || '',
+  })
+  const [loading, setLoading] = useState(false)
+
+  const update = (k: keyof EditForm, v: string | boolean) =>
+    setForm((f) => ({ ...f, [k]: v }))
+
+  const submit = async () => {
+    setLoading(true)
+    try {
+      const payload: Record<string, unknown> = {
+        name: form.name,
+        tagline: form.tagline || undefined,
+        address: form.address || undefined,
+        city: form.city || undefined,
+        phone: form.phone,
+        email: form.email || '',
+        plan: form.plan,
+        subscriptionStatus: form.subscriptionStatus,
+        isOpen: form.isOpen,
+      }
+      if (form.subscriptionStatus === 'SUSPENDED') {
+        payload.suspendReason = form.suspendReason || 'Suspended by platform admin'
+      }
+      const res = await fetch(`/api/platform/restaurants/${tenant.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const json = await res.json()
+      if (!res.ok) {
+        toast.error(json.error || 'Failed to save changes')
+      } else {
+        toast.success('Tenant updated')
+        qc.invalidateQueries({ queryKey: ['platform-tenants'] })
+        qc.invalidateQueries({ queryKey: ['platform-metrics'] })
+        onClose()
+      }
+    } catch {
+      toast.error('Network error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Edit tenant</DialogTitle>
+          <DialogDescription>
+            Update profile, plan, subscription status, and order availability for{' '}
+            <span className="font-medium text-foreground">{tenant.name}</span>.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <Label>Restaurant name *</Label>
+              <Input value={form.name} onChange={(e) => update('name', e.target.value)} />
+            </div>
+            <div>
+              <Label>Tagline</Label>
+              <Input value={form.tagline} onChange={(e) => update('tagline', e.target.value)} />
+            </div>
+          </div>
+          <div>
+            <Label>Address</Label>
+            <Textarea value={form.address} onChange={(e) => update('address', e.target.value)} placeholder="Full address" />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <Label>City</Label>
+              <Input value={form.city} onChange={(e) => update('city', e.target.value)} />
+            </div>
+            <div>
+              <Label>Phone *</Label>
+              <Input value={form.phone} onChange={(e) => update('phone', e.target.value)} />
+            </div>
+            <div>
+              <Label>Email</Label>
+              <Input value={form.email} onChange={(e) => update('email', e.target.value)} type="email" />
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Subscription
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <Label>Plan</Label>
+                <Select value={form.plan} onValueChange={(v) => update('plan', v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="TRIAL">Trial (14 days free)</SelectItem>
+                    <SelectItem value="STARTER">Starter (₹1,499/mo)</SelectItem>
+                    <SelectItem value="PRO">Professional (₹3,999/mo)</SelectItem>
+                    <SelectItem value="ENTERPRISE">Enterprise (₹9,999/mo)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Status</Label>
+                <Select value={form.subscriptionStatus} onValueChange={(v) => update('subscriptionStatus', v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ACTIVE">Active</SelectItem>
+                    <SelectItem value="TRIALING">Trialing</SelectItem>
+                    <SelectItem value="PAST_DUE">Past due</SelectItem>
+                    <SelectItem value="SUSPENDED">Suspended</SelectItem>
+                    <SelectItem value="CANCELLED">Cancelled</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            {form.subscriptionStatus === 'SUSPENDED' && (
+              <div className="mt-3">
+                <Label>Suspend reason (visible to tenant)</Label>
+                <Textarea
+                  value={form.suspendReason}
+                  onChange={(e) => update('suspendReason', e.target.value)}
+                  placeholder="e.g. Payment failure, policy violation, requested cancellation..."
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-3">
+            <div>
+              <p className="text-sm font-medium">Open for orders</p>
+              <p className="text-xs text-muted-foreground">
+                When off, customers scanning QR codes will see a &ldquo;closed&rdquo; screen.
+              </p>
+            </div>
+            <Switch
+              checked={form.isOpen}
+              onCheckedChange={(v) => update('isOpen', v)}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} disabled={loading} className="bg-orange-600 hover:bg-orange-700">
+            {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            Save changes
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

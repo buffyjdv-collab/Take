@@ -231,9 +231,14 @@ export async function POST(req: NextRequest) {
 
   // Decide whether the restaurant should auto-request payment upfront.
   // requirePrePayment (settings) → customer must pay BEFORE the order is accepted.
+  // In that case the order is created with status = 'PENDING_PAYMENT' so it is
+  // hidden from the kitchen/orders module until the customer pays. Once payment
+  // is confirmed (via /api/customer/payment/verify or mark-as-cash), the order
+  // transitions to 'NEW' and becomes visible for acceptance.
   const settings = restaurant.settings
   const shouldRequirePrePayment =
     !!settings?.allowPrePayment && !!settings?.requirePrePayment
+  const initialStatus = shouldRequirePrePayment ? 'PENDING_PAYMENT' : 'NEW'
 
   // Create order + items + modifiers + update table — in a transaction
   const created = await db.$transaction(async (tx) => {
@@ -248,7 +253,7 @@ export async function POST(req: NextRequest) {
         // has them even if the Customer record is later deleted.
         customerName,
         customerPhone,
-        status: 'NEW',
+        status: initialStatus,
         paymentStatus: 'PENDING',
         notes: input.notes || null,
         idempotencyKey: input.idempotencyKey,

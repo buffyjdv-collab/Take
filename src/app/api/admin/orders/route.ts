@@ -24,10 +24,20 @@ export async function GET(req: NextRequest) {
 
   const from = sp.get('from')
   const to = sp.get('to')
+  // By default, orders in PENDING_PAYMENT status are hidden from the orders
+  // module — they only become visible once the customer pays (and the order
+  // transitions to NEW). Super admin / owner can opt in via ?includePendingPayment=true
+  // to see them (e.g. to cancel a stuck order).
+  const includePendingPayment = sp.get('includePendingPayment') === 'true'
 
   const where: Record<string, unknown> = {}
   if (restaurantId) where.restaurantId = restaurantId
-  if (status) where.status = status
+  if (status) {
+    where.status = status
+  } else if (!includePendingPayment) {
+    // Hide PENDING_PAYMENT orders unless explicitly requested
+    where.status = { not: 'PENDING_PAYMENT' }
+  }
   if (paymentStatus) where.paymentStatus = paymentStatus
   if (tableId) where.tableId = tableId
   if (search) where.orderNumber = { contains: search }

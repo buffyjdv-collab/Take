@@ -117,7 +117,7 @@ export const modifierGroupSchema = z.object({
 //   - a server-relative path (/uploads/…) returned by /api/admin/upload
 export const menuItemImageSchema = z
   .string()
-  .max(2_000_000, 'Image payload too large (max 2MB for data URLs)')
+  .max(7_500_000, 'Image payload too large (max 5MB for data URLs)')
   .refine(
     (v) =>
       v === '' ||

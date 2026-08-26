@@ -201,6 +201,25 @@ export function useRequestPayment() {
   })
 }
 
+// Waiter / owner / manager / cashier marks an order as paid in cash.
+// The acting user's name is recorded on the order (cashReceivedByName) so the
+// payments report can attribute the collection to a specific person.
+export function useMarkCashPaid() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, method }: { id: string; method?: 'CASH' | 'COUNTER' }) =>
+      api<any>(`/api/admin/orders/${id}/mark-cash-paid`, {
+        method: 'POST',
+        body: JSON.stringify({ method: method || 'CASH' }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin-orders'] })
+      qc.invalidateQueries({ queryKey: ['admin-order'] })
+      qc.invalidateQueries({ queryKey: ['admin-dashboard'] })
+    },
+  })
+}
+
 export function useAdminCategories() {
   return useQuery({
     queryKey: ['admin-categories'],

@@ -87,16 +87,18 @@ export function OrderTracking({
   }
 
   const curStep = stepIndex(order.status)
-  const canCancel = order.status === 'NEW'
+  const canCancel = order.status === 'NEW' || order.status === 'PENDING_PAYMENT'
   const canRequestBill = ['SERVED', 'READY'].includes(order.status) && order.paymentStatus !== 'PAID'
   const isPaid = order.paymentStatus === 'PAID'
   const isCompleted = order.status === 'COMPLETED'
+  const isPendingPayment = order.status === 'PENDING_PAYMENT'
 
   // If the restaurant has asked the customer to pay (pre or post), show a
   // prominent payment panel so the customer can settle the bill immediately.
+  // PENDING_PAYMENT status itself implies the customer needs to pay upfront.
   const needsToPay =
     !isPaid &&
-    (order.prePaymentRequested || order.postPaymentRequested)
+    (isPendingPayment || order.prePaymentRequested || order.postPaymentRequested)
   const acceptUpi = restaurant?.acceptUpi ?? true
   const acceptCard = restaurant?.acceptCard ?? true
   const acceptCounter = restaurant?.acceptCounter ?? true
@@ -263,7 +265,8 @@ export function OrderTracking({
       </Card>
 
       {/* Payment-requested panel — shown when the restaurant asks the customer
-          to pay before accepting (PRE) or after receiving (POST) the order */}
+          to pay before accepting (PRE) or after receiving (POST) the order.
+          Also shown when the order is in PENDING_PAYMENT status (auto pre-payment). */}
       {needsToPay && (
         <motion.div
           initial={{ y: 8, opacity: 0 }}
@@ -273,15 +276,15 @@ export function OrderTracking({
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-base text-amber-900">
                 <CreditCard className="h-4 w-4" />
-                {order.prePaymentRequested
+                {isPendingPayment || order.prePaymentRequested
                   ? 'Please pay before we accept your order'
                   : 'Please pay to complete your order'}
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
               <p className="text-sm text-amber-800">
-                {order.prePaymentRequested
-                  ? 'The restaurant has requested payment upfront. Your order will be accepted once payment is confirmed.'
+                {isPendingPayment || order.prePaymentRequested
+                  ? 'This restaurant requires upfront payment. Your order will be sent to the kitchen automatically once payment is confirmed.'
                   : 'Your order has been received. Please settle the bill before leaving the table.'}
               </p>
               <div className="flex items-center justify-between rounded-lg bg-white p-3 text-sm shadow-sm">
@@ -328,6 +331,10 @@ export function OrderTracking({
                   Processing payment…
                 </div>
               )}
+              <p className="text-center text-xs text-amber-700">
+                Prefer to pay in cash? Hand the cash to your waiter and they will
+                mark your order as paid.
+              </p>
             </CardContent>
           </Card>
         </motion.div>

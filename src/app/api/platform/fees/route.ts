@@ -7,9 +7,44 @@ import { resolveDateRange } from '@/lib/date-range'
 
 export const dynamic = 'force-dynamic'
 
+type GroupBy = 'day' | 'month' | 'year'
+
+/** Returns the period bucket key for a date based on the grouping mode. */
+function getPeriodKey(date: Date, groupBy: GroupBy): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  if (groupBy === 'day') return `${y}-${m}-${d}`
+  if (groupBy === 'year') return `${y}`
+  return `${y}-${m}` // month (default)
+}
+
+/** Human-friendly label for a period bucket key. */
+export function formatPeriodLabel(period: string, groupBy: GroupBy): string {
+  if (groupBy === 'day') {
+    const [y, m, d] = period.split('-')
+    const date = new Date(Number(y), Number(m) - 1, Number(d))
+    return new Intl.DateTimeFormat('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    }).format(date)
+  }
+  if (groupBy === 'year') return period
+  // month
+  const [y, m] = period.split('-')
+  const date = new Date(Number(y), Number(m) - 1, 1)
+  return new Intl.DateTimeFormat('en-IN', {
+    month: 'long',
+    year: 'numeric',
+  }).format(date)
+}
+
 /**
  * Platform Fees Collected — super admin view of fees collected per tenant.
  * Returns: total collected, breakdown by tenant, breakdown by fee type, trend.
+ * Optional ?groupBy=day|month|year — adds a byTenantByPeriod[] array of
+ * per-restaurant per-period buckets (collected / pending / refunded / etc).
  */
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
@@ -28,6 +63,10 @@ export async function GET(req: NextRequest) {
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 400 })
   }
+
+  const groupByRaw = (sp.get('groupBy') || 'month').toLowerCase()
+  const groupBy: GroupBy =
+    groupByRaw === 'day' || groupByRaw === 'year' ? groupByRaw : 'month'
 
   const fees = await db.platformFee.findMany({
     where: {
@@ -56,7 +95,7 @@ export async function GET(req: NextRequest) {
       },
     },
     orderBy: { createdAt: 'desc' },
-    take: 500,
+    take: 2000,
   })
 
   // Aggregate by tenant
@@ -67,6 +106,25 @@ export async function GET(req: NextRequest) {
       restaurantName: string
       slug: string
       plan: string
+      feeCount: number
+      collected: number
+      pending: number
+      refunded: number
+      customerPaid: number
+      restaurantPaid: number
+    }
+  >()
+
+  // Aggregate by tenant AND period bucket (only meaningful if groupBy is set,
+  // but we always compute it — client can choose to render or ignore).
+  const tenantPeriodMap = new Map<
+    string,
+    {
+      restaurantId: string
+      restaurantName: string
+      slug: string
+      plan: string
+      period: string
       feeCount: number
       collected: number
       pending: number
@@ -101,18 +159,63 @@ export async function GET(req: NextRequest) {
       cur.refunded += f.feeAmount
     }
     tenantMap.set(key, cur)
+
+    // Period bucket
+    const periodKey = getPeriodKey(f.createdAt, groupBy)
+    const tpKey = `${key}__${periodKey}`
+    const tp = tenantPeriodMap.get(tpKey) || {
+      restaurantId: f.restaurantId,
+      restaurantName: f.restaurant?.name || 'Unknown',
+      slug: f.restaurant?.slug || '',
+      plan: f.restaurant?.plan || 'TRIAL',
+      period: periodKey,
+      feeCount: 0,
+      collected: 0,
+      pending: 0,
+      refunded: 0,
+      customerPaid: 0,
+      restaurantPaid: 0,
+    }
+    tp.feeCount += 1
+    if (f.status === 'COLLECTED') {
+      tp.collected += f.feeAmount
+      tp.customerPaid += f.customerPortion
+      tp.restaurantPaid += f.restaurantPortion
+    } else if (f.status === 'PENDING') {
+      tp.pending += f.feeAmount
+    } else if (f.status === 'REFUNDED') {
+      tp.refunded += f.feeAmount
+    }
+    tenantPeriodMap.set(tpKey, tp)
   }
+
+  const round2 = (n: number) => +n.toFixed(2)
 
   const byTenant = Array.from(tenantMap.values())
     .map((t) => ({
       ...t,
-      collected: +t.collected.toFixed(2),
-      pending: +t.pending.toFixed(2),
-      refunded: +t.refunded.toFixed(2),
-      customerPaid: +t.customerPaid.toFixed(2),
-      restaurantPaid: +t.restaurantPaid.toFixed(2),
+      collected: round2(t.collected),
+      pending: round2(t.pending),
+      refunded: round2(t.refunded),
+      customerPaid: round2(t.customerPaid),
+      restaurantPaid: round2(t.restaurantPaid),
     }))
     .sort((a, b) => b.collected - a.collected)
+
+  const byTenantByPeriod = Array.from(tenantPeriodMap.values())
+    .map((t) => ({
+      ...t,
+      collected: round2(t.collected),
+      pending: round2(t.pending),
+      refunded: round2(t.refunded),
+      customerPaid: round2(t.customerPaid),
+      restaurantPaid: round2(t.restaurantPaid),
+    }))
+    .sort((a, b) => {
+      // primary: restaurantId, secondary: period ascending (oldest first)
+      if (a.restaurantId !== b.restaurantId) return a.restaurantId.localeCompare(b.restaurantId)
+      return a.period.localeCompare(b.period)
+    })
 
   // Aggregate by fee type
   const feeTypeMap: Record<string, number> = {}
@@ -143,18 +246,20 @@ export async function GET(req: NextRequest) {
       range: dateRange.label,
       from: dateRange.from.toISOString(),
       to: dateRange.to.toISOString(),
-      totalCollected: +totalCollected.toFixed(2),
-      totalPending: +totalPending.toFixed(2),
-      totalRefunded: +totalRefunded.toFixed(2),
+      groupBy,
+      totalCollected: round2(totalCollected),
+      totalPending: round2(totalPending),
+      totalRefunded: round2(totalRefunded),
       totalFees: fees.length,
       byTenant,
+      byTenantByPeriod,
       byFeeType: Object.entries(feeTypeMap).map(([type, amount]) => ({
         feeType: type,
-        amount: +amount.toFixed(2),
+        amount: round2(amount),
       })),
       byPayer: Object.entries(payerMap).map(([payer, amount]) => ({
         payer,
-        amount: +amount.toFixed(2),
+        amount: round2(amount),
       })),
       recentFees: fees.slice(0, 20).map((f) => ({
         id: f.id,

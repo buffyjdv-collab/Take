@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,11 @@ import {
   SelectContent,
   SelectItem,
 } from '@/components/ui/select'
+import {
+  Collapsible,
+  CollapsibleTrigger,
+  CollapsibleContent,
+} from '@/components/ui/collapsible'
 import {
   ResponsiveContainer,
   BarChart,
@@ -39,6 +44,11 @@ import {
   Calendar as CalendarIcon,
   IndianRupee,
   Package,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -54,18 +64,73 @@ const RANGES = [
   { value: 'custom', label: 'Custom range' },
 ]
 
+type GroupBy = 'day' | 'month'
+type SortDir = 'asc' | 'desc'
+
+// ----------------------------------------------------------------------------
+// Generic sort helper — works on any row type. Compares strings via
+// localeCompare (correct for ISO date strings like YYYY-MM-DD / YYYY-MM) and
+// numbers numerically.
+// ----------------------------------------------------------------------------
+function sortRows<T>(rows: T[], sortKey: string, sortDir: SortDir): T[] {
+  const dir = sortDir === 'asc' ? 1 : -1
+  return [...rows].sort((a, b) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const av = (a as any)[sortKey]
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const bv = (b as any)[sortKey]
+    if (typeof av === 'string' && typeof bv === 'string') {
+      // ISO date strings (YYYY-MM-DD or YYYY-MM) sort correctly via localeCompare
+      return av.localeCompare(bv) * dir
+    }
+    const an = Number(av ?? 0)
+    const bn = Number(bv ?? 0)
+    return (an - bn) * dir
+  })
+}
+
+// ----------------------------------------------------------------------------
+// Sort hook — Excel-style toggle (click active column flips direction,
+// click a new column defaults to ascending).
+// ----------------------------------------------------------------------------
+function useSort(defaultKey: string, defaultDir: SortDir = 'desc') {
+  const [sortKey, setSortKey] = useState<string>(defaultKey)
+  const [sortDir, setSortDir] = useState<SortDir>(defaultDir)
+
+  const toggleSort = (key: string) => {
+    if (key === sortKey) {
+      setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortKey(key)
+      setSortDir('asc')
+    }
+  }
+
+  return { sortKey, sortDir, toggleSort }
+}
+
+function getMonthKey(dateStr: string): string {
+  // Accepts YYYY-MM-DD or any ISO date; returns YYYY-MM
+  return dateStr.slice(0, 7)
+}
+
+function formatMonthLabel(monthKey: string): string {
+  const [y, m] = monthKey.split('-')
+  const d = new Date(Number(y), Number(m) - 1, 1)
+  return d.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })
+}
+
 export function ReportsManager() {
   const [range, setRange] = useState('7d')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
   const [tab, setTab] = useState('sales')
+  const [groupBy, setGroupBy] = useState<GroupBy>('day')
 
-  const effectiveRange =
-    range === 'custom' && customFrom && customTo ? 'custom' : range
   const queryString =
     range === 'custom' && customFrom && customTo
-      ? `range=custom&from=${customFrom}&to=${customTo}`
-      : `range=${range}`
+      ? `range=custom&from=${customFrom}&to=${customTo}&groupBy=${groupBy}`
+      : `range=${range}&groupBy=${groupBy}`
 
   return (
     <div className="mx-auto max-w-7xl space-y-4 p-4 md:p-6">
@@ -109,6 +174,19 @@ export function ReportsManager() {
               </SelectContent>
             </Select>
           </div>
+          <div>
+            <Label className="text-xs">Group by</Label>
+            <Select value={groupBy} onValueChange={(v) => setGroupBy(v as GroupBy)}>
+              <SelectTrigger className="w-[140px]">
+                <CalendarIcon className="mr-2 h-4 w-4" />
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="day">Day</SelectItem>
+                <SelectItem value="month">Month</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           {range === 'custom' && (
             <>
               <div>
@@ -133,7 +211,7 @@ export function ReportsManager() {
         </TabsList>
 
         <TabsContent value="sales" className="mt-4">
-          <SalesReport queryString={queryString} />
+          <SalesReport queryString={queryString} groupBy={groupBy} />
         </TabsContent>
         <TabsContent value="products" className="mt-4">
           <ProductsReport queryString={queryString} />
@@ -164,7 +242,42 @@ interface SalesRow {
   total: number
 }
 
-function SalesReport({ queryString }: { queryString: string }) {
+interface SalesMonthGroup {
+  monthKey: string // YYYY-MM
+  agg: SalesRow // date field set to monthKey for sort compatibility
+  days: SalesRow[]
+}
+
+function aggregateSalesByMonth(rows: SalesRow[]): SalesMonthGroup[] {
+  const map = new Map<string, SalesRow[]>()
+  for (const r of rows) {
+    const mk = getMonthKey(r.date)
+    if (!map.has(mk)) map.set(mk, [])
+    map.get(mk)!.push(r)
+  }
+  const groups: SalesMonthGroup[] = []
+  for (const [monthKey, days] of Array.from(map.entries())) {
+    // Days within a month are always shown chronologically (date asc)
+    const sortedDays = [...days].sort((a, b) => a.date.localeCompare(b.date))
+    const agg: SalesRow = sortedDays.reduce(
+      (acc, r) => ({
+        date: monthKey,
+        orders: acc.orders + r.orders,
+        grossSales: acc.grossSales + r.grossSales,
+        discount: acc.discount + r.discount,
+        refund: acc.refund + r.refund,
+        netSales: acc.netSales + r.netSales,
+        tax: acc.tax + r.tax,
+        total: acc.total + r.total,
+      }),
+      { date: monthKey, orders: 0, grossSales: 0, discount: 0, refund: 0, netSales: 0, tax: 0, total: 0 },
+    )
+    groups.push({ monthKey, agg, days: sortedDays })
+  }
+  return groups
+}
+
+function SalesReport({ queryString, groupBy }: { queryString: string; groupBy: GroupBy }) {
   const { data, isLoading, isError } = useQuery({
     queryKey: ['report-sales', queryString],
     queryFn: async () => {
@@ -179,9 +292,52 @@ function SalesReport({ queryString }: { queryString: string }) {
     },
   })
 
+  const { sortKey, sortDir, toggleSort } = useSort('date', 'desc')
+  const [expandedMonths, setExpandedMonths] = useState<Set<string>>(new Set())
+
+  // Month groups (memoized so the order stays stable across re-renders)
+  const monthGroups = useMemo<SalesMonthGroup[]>(() => {
+    if (!data) return []
+    return aggregateSalesByMonth(data.rows)
+  }, [data])
+
+  // Sorted month aggregations (we sort the agg row, then look up its group)
+  const sortedMonthGroups = useMemo<SalesMonthGroup[]>(() => {
+    if (monthGroups.length === 0) return []
+    const sortedAggs = sortRows(monthGroups.map((g) => g.agg), sortKey, sortDir)
+    return sortedAggs
+      .map((agg) => monthGroups.find((g) => g.monthKey === agg.date))
+      .filter((g): g is SalesMonthGroup => Boolean(g))
+  }, [monthGroups, sortKey, sortDir])
+
+  // Sorted day rows (for day view)
+  const sortedDayRows = useMemo<SalesRow[]>(() => {
+    if (!data) return []
+    return sortRows(data.rows, sortKey, sortDir)
+  }, [data, sortKey, sortDir])
+
+  const allMonthsExpanded =
+    monthGroups.length > 0 && monthGroups.every((g) => expandedMonths.has(g.monthKey))
+
+  const toggleAllMonths = () => {
+    if (allMonthsExpanded) {
+      setExpandedMonths(new Set())
+    } else {
+      setExpandedMonths(new Set(monthGroups.map((g) => g.monthKey)))
+    }
+  }
+
+  const toggleOneMonth = (monthKey: string, open: boolean) => {
+    setExpandedMonths((prev) => {
+      const next = new Set(prev)
+      if (open) next.add(monthKey)
+      else next.delete(monthKey)
+      return next
+    })
+  }
+
   if (isLoading) return <div className="flex justify-center py-10"><LoadingSpinner size="lg" /></div>
   if (isError) return <EmptyState title="Couldn't load sales report" />
-
   if (!data) return null
 
   const chartData = data.rows.map((r) => ({
@@ -229,37 +385,125 @@ function SalesReport({ queryString }: { queryString: string }) {
       {/* Table */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Sales breakdown</CardTitle>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="text-base">
+              Sales breakdown
+              {groupBy === 'month' && (
+                <span className="ml-2 text-xs font-normal text-muted-foreground">(by month — click a row to expand)</span>
+              )}
+            </CardTitle>
+            {groupBy === 'month' && monthGroups.length > 0 && (
+              <Button variant="outline" size="sm" onClick={toggleAllMonths}>
+                {allMonthsExpanded ? (
+                  <><ChevronUp className="mr-2 h-4 w-4" />Collapse all</>
+                ) : (
+                  <><ChevronDown className="mr-2 h-4 w-4" />Expand all</>
+                )}
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="border-b bg-slate-50 text-left">
                 <tr>
-                  <Th>Date</Th>
-                  <Th align="right">Orders</Th>
-                  <Th align="right">Gross Sales</Th>
-                  <Th align="right">Discount</Th>
-                  <Th align="right">Refund</Th>
-                  <Th align="right">Net Sales</Th>
-                  <Th align="right">Tax</Th>
-                  <Th align="right">Total</Th>
+                  <SortableTh sortKey="date" activeKey={sortKey} direction={sortDir} onSort={toggleSort}>
+                    {groupBy === 'month' ? 'Month' : 'Date'}
+                  </SortableTh>
+                  <SortableTh sortKey="orders" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Orders</SortableTh>
+                  <SortableTh sortKey="grossSales" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Gross Sales</SortableTh>
+                  <SortableTh sortKey="discount" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Discount</SortableTh>
+                  <SortableTh sortKey="refund" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Refund</SortableTh>
+                  <SortableTh sortKey="netSales" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Net Sales</SortableTh>
+                  <SortableTh sortKey="tax" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Tax</SortableTh>
+                  <SortableTh sortKey="total" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Total</SortableTh>
                 </tr>
               </thead>
-              <tbody>
-                {data.rows.map((r) => (
-                  <tr key={r.date} className="border-b last:border-0 hover:bg-slate-50">
-                    <Td>{new Date(r.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</Td>
-                    <Td align="right">{r.orders}</Td>
-                    <Td align="right">{formatINR(r.grossSales)}</Td>
-                    <Td align="right" className="text-red-600">{r.discount > 0 ? `-${formatINR(r.discount)}` : '—'}</Td>
-                    <Td align="right" className="text-red-600">{r.refund > 0 ? `-${formatINR(r.refund)}` : '—'}</Td>
-                    <Td align="right" className="font-medium">{formatINR(r.netSales)}</Td>
-                    <Td align="right">{formatINR(r.tax)}</Td>
-                    <Td align="right" className="font-bold">{formatINR(r.total)}</Td>
-                  </tr>
-                ))}
-              </tbody>
+
+              {groupBy === 'month' ? (
+                sortedMonthGroups.length === 0 ? (
+                  <tbody>
+                    <tr><td colSpan={8} className="py-8 text-center text-sm text-muted-foreground">No sales in this range</td></tr>
+                  </tbody>
+                ) : (
+                  sortedMonthGroups.map((group) => {
+                    const isOpen = expandedMonths.has(group.monthKey)
+                    return (
+                      <Collapsible
+                        key={group.monthKey}
+                        asChild
+                        open={isOpen}
+                        onOpenChange={(open) => toggleOneMonth(group.monthKey, open)}
+                      >
+                        <tbody className="group">
+                          <CollapsibleTrigger asChild>
+                            <tr className="cursor-pointer border-b last:border-0 hover:bg-slate-50">
+                              <Td>
+                                <span className="inline-flex items-center gap-1.5 font-semibold">
+                                  {isOpen ? (
+                                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                  ) : (
+                                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                                  )}
+                                  {formatMonthLabel(group.monthKey)}
+                                </span>
+                              </Td>
+                              <Td align="right">{group.agg.orders}</Td>
+                              <Td align="right">{formatINR(group.agg.grossSales)}</Td>
+                              <Td align="right" className="text-red-600">{group.agg.discount > 0 ? `-${formatINR(group.agg.discount)}` : '—'}</Td>
+                              <Td align="right" className="text-red-600">{group.agg.refund > 0 ? `-${formatINR(group.agg.refund)}` : '—'}</Td>
+                              <Td align="right" className="font-medium">{formatINR(group.agg.netSales)}</Td>
+                              <Td align="right">{formatINR(group.agg.tax)}</Td>
+                              <Td align="right" className="font-bold">{formatINR(group.agg.total)}</Td>
+                            </tr>
+                          </CollapsibleTrigger>
+
+                          {group.days.map((day) => (
+                            <CollapsibleContent asChild key={day.date}>
+                              <tr className="border-b bg-slate-50/60 text-xs last:border-0">
+                                <Td>
+                                  <span className="ml-6 inline-flex items-center gap-1 text-muted-foreground">
+                                    <span className="text-slate-400">↳</span>
+                                    {new Date(day.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                                  </span>
+                                </Td>
+                                <Td align="right">{day.orders}</Td>
+                                <Td align="right">{formatINR(day.grossSales)}</Td>
+                                <Td align="right" className="text-red-600">{day.discount > 0 ? `-${formatINR(day.discount)}` : '—'}</Td>
+                                <Td align="right" className="text-red-600">{day.refund > 0 ? `-${formatINR(day.refund)}` : '—'}</Td>
+                                <Td align="right" className="font-medium">{formatINR(day.netSales)}</Td>
+                                <Td align="right">{formatINR(day.tax)}</Td>
+                                <Td align="right" className="font-semibold">{formatINR(day.total)}</Td>
+                              </tr>
+                            </CollapsibleContent>
+                          ))}
+                        </tbody>
+                      </Collapsible>
+                    )
+                  })
+                )
+              ) : (
+                <tbody>
+                  {sortedDayRows.length === 0 ? (
+                    <tr><td colSpan={8} className="py-8 text-center text-sm text-muted-foreground">No sales in this range</td></tr>
+                  ) : (
+                    sortedDayRows.map((r) => (
+                      <tr key={r.date} className="border-b last:border-0 hover:bg-slate-50">
+                        <Td>{new Date(r.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</Td>
+                        <Td align="right">{r.orders}</Td>
+                        <Td align="right">{formatINR(r.grossSales)}</Td>
+                        <Td align="right" className="text-red-600">{r.discount > 0 ? `-${formatINR(r.discount)}` : '—'}</Td>
+                        <Td align="right" className="text-red-600">{r.refund > 0 ? `-${formatINR(r.refund)}` : '—'}</Td>
+                        <Td align="right" className="font-medium">{formatINR(r.netSales)}</Td>
+                        <Td align="right">{formatINR(r.tax)}</Td>
+                        <Td align="right" className="font-bold">{formatINR(r.total)}</Td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              )}
+
               <tfoot className="border-t-2 bg-orange-50 font-bold">
                 <tr>
                   <Td>Total</Td>
@@ -313,6 +557,13 @@ function ProductsReport({ queryString }: { queryString: string }) {
       }
     },
   })
+
+  const { sortKey, sortDir, toggleSort } = useSort('quantity', 'desc')
+
+  const sortedItems = useMemo<ProductRow[]>(() => {
+    if (!data) return []
+    return sortRows(data.items, sortKey, sortDir)
+  }, [data, sortKey, sortDir])
 
   if (isLoading) return <div className="flex justify-center py-10"><LoadingSpinner size="lg" /></div>
   if (isError) return <EmptyState title="Couldn't load products report" />
@@ -390,35 +641,39 @@ function ProductsReport({ queryString }: { queryString: string }) {
             <table className="w-full text-sm">
               <thead className="border-b bg-slate-50 text-left">
                 <tr>
-                  <Th>Item</Th>
-                  <Th>Category</Th>
-                  <Th align="right">Qty</Th>
-                  <Th align="right">Gross Sales</Th>
-                  <Th align="right">Discount</Th>
-                  <Th align="right">Net Sales</Th>
+                  <SortableTh sortKey="name" activeKey={sortKey} direction={sortDir} onSort={toggleSort}>Item</SortableTh>
+                  <SortableTh sortKey="categoryName" activeKey={sortKey} direction={sortDir} onSort={toggleSort}>Category</SortableTh>
+                  <SortableTh sortKey="quantity" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Qty</SortableTh>
+                  <SortableTh sortKey="grossSales" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Gross Sales</SortableTh>
+                  <SortableTh sortKey="discount" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Discount</SortableTh>
+                  <SortableTh sortKey="netSales" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Net Sales</SortableTh>
                 </tr>
               </thead>
               <tbody>
-                {data.items.map((item) => (
-                  <tr key={item.menuItemId} className="border-b last:border-0 hover:bg-slate-50">
-                    <Td>
-                      <div className="flex items-center gap-2">
-                        {item.image && <img src={item.image} alt="" className="h-8 w-8 rounded object-cover" />}
-                        <div>
-                          <p className="font-medium">{item.name}</p>
-                          <p className="text-[10px] text-muted-foreground">
-                            {item.isVeg ? '🟢 Veg' : '🔴 Non-veg'} {item.isSpicy && '· 🌶 Spicy'}
-                          </p>
+                {sortedItems.length === 0 ? (
+                  <tr><td colSpan={6} className="py-8 text-center text-sm text-muted-foreground">No items sold in this range</td></tr>
+                ) : (
+                  sortedItems.map((item) => (
+                    <tr key={item.menuItemId} className="border-b last:border-0 hover:bg-slate-50">
+                      <Td>
+                        <div className="flex items-center gap-2">
+                          {item.image && <img src={item.image} alt="" className="h-8 w-8 rounded object-cover" />}
+                          <div>
+                            <p className="font-medium">{item.name}</p>
+                            <p className="text-[10px] text-muted-foreground">
+                              {item.isVeg ? '🟢 Veg' : '🔴 Non-veg'} {item.isSpicy && '· 🌶 Spicy'}
+                            </p>
+                          </div>
                         </div>
-                      </div>
-                    </Td>
-                    <Td>{item.categoryName || '—'}</Td>
-                    <Td align="right" className="font-medium">{item.quantity}</Td>
-                    <Td align="right">{formatINR(item.grossSales)}</Td>
-                    <Td align="right" className="text-red-600">{item.discount > 0 ? `-${formatINR(item.discount)}` : '—'}</Td>
-                    <Td align="right" className="font-bold">{formatINR(item.netSales)}</Td>
-                  </tr>
-                ))}
+                      </Td>
+                      <Td>{item.categoryName || '—'}</Td>
+                      <Td align="right" className="font-medium">{item.quantity}</Td>
+                      <Td align="right">{formatINR(item.grossSales)}</Td>
+                      <Td align="right" className="text-red-600">{item.discount > 0 ? `-${formatINR(item.discount)}` : '—'}</Td>
+                      <Td align="right" className="font-bold">{formatINR(item.netSales)}</Td>
+                    </tr>
+                  ))
+                )}
               </tbody>
               <tfoot className="border-t-2 bg-orange-50 font-bold">
                 <tr>
@@ -467,10 +722,18 @@ function CategoriesReport({ queryString }: { queryString: string }) {
     },
   })
 
+  const { sortKey, sortDir, toggleSort } = useSort('revenue', 'desc')
+
+  const sortedCategories = useMemo<CategoryRow[]>(() => {
+    if (!data) return []
+    return sortRows(data.categories, sortKey, sortDir)
+  }, [data, sortKey, sortDir])
+
   if (isLoading) return <div className="flex justify-center py-10"><LoadingSpinner size="lg" /></div>
   if (isError) return <EmptyState title="Couldn't load categories report" />
   if (!data) return null
 
+  // Pie chart uses original ordering (by revenue desc) for stable colour assignment
   const chartData = data.categories.map((c) => ({
     name: c.name,
     revenue: c.revenue,
@@ -554,37 +817,46 @@ function CategoriesReport({ queryString }: { queryString: string }) {
             <table className="w-full text-sm">
               <thead className="border-b bg-slate-50 text-left">
                 <tr>
-                  <Th>Category</Th>
-                  <Th align="right">Qty</Th>
-                  <Th align="right">Revenue</Th>
-                  <Th align="right">Share</Th>
+                  <SortableTh sortKey="name" activeKey={sortKey} direction={sortDir} onSort={toggleSort}>Category</SortableTh>
+                  <SortableTh sortKey="quantity" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Qty</SortableTh>
+                  <SortableTh sortKey="revenue" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Revenue</SortableTh>
+                  <SortableTh sortKey="percentage" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Share</SortableTh>
                   <Th>Distribution</Th>
                 </tr>
               </thead>
               <tbody>
-                {data.categories.map((c, i) => (
-                  <tr key={c.categoryId} className="border-b last:border-0 hover:bg-slate-50">
-                    <Td>
-                      <span className="mr-2">{c.icon}</span>
-                      <span className="font-medium">{c.name}</span>
-                    </Td>
-                    <Td align="right">{c.quantity}</Td>
-                    <Td align="right" className="font-bold">{formatINR(c.revenue)}</Td>
-                    <Td align="right">
-                      <Badge variant="outline" className="font-bold">
-                        {c.percentage}%
-                      </Badge>
-                    </Td>
-                    <Td>
-                      <div className="h-2 w-full max-w-[200px] overflow-hidden rounded-full bg-slate-100">
-                        <div
-                          className="h-full rounded-full"
-                          style={{ width: `${c.percentage}%`, backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }}
-                        />
-                      </div>
-                    </Td>
-                  </tr>
-                ))}
+                {sortedCategories.length === 0 ? (
+                  <tr><td colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No category sales in this range</td></tr>
+                ) : (
+                  sortedCategories.map((c) => {
+                    // Stable colour based on the original category index in the API response
+                    const originalIdx = data.categories.findIndex((x) => x.categoryId === c.categoryId)
+                    const colour = PIE_COLORS[(originalIdx < 0 ? 0 : originalIdx) % PIE_COLORS.length]
+                    return (
+                      <tr key={c.categoryId} className="border-b last:border-0 hover:bg-slate-50">
+                        <Td>
+                          <span className="mr-2">{c.icon}</span>
+                          <span className="font-medium">{c.name}</span>
+                        </Td>
+                        <Td align="right">{c.quantity}</Td>
+                        <Td align="right" className="font-bold">{formatINR(c.revenue)}</Td>
+                        <Td align="right">
+                          <Badge variant="outline" className="font-bold">
+                            {c.percentage}%
+                          </Badge>
+                        </Td>
+                        <Td>
+                          <div className="h-2 w-full max-w-[200px] overflow-hidden rounded-full bg-slate-100">
+                            <div
+                              className="h-full rounded-full"
+                              style={{ width: `${c.percentage}%`, backgroundColor: colour }}
+                            />
+                          </div>
+                        </Td>
+                      </tr>
+                    )
+                  })
+                )}
               </tbody>
               <tfoot className="border-t-2 bg-orange-50 font-bold">
                 <tr>
@@ -642,6 +914,13 @@ function PaymentsReport({ queryString }: { queryString: string }) {
     },
   })
 
+  const { sortKey, sortDir, toggleSort } = useSort('collected', 'desc')
+
+  const sortedByMethod = useMemo<PaymentMethodRow[]>(() => {
+    if (!data) return []
+    return sortRows(data.byMethod, sortKey, sortDir)
+  }, [data, sortKey, sortDir])
+
   if (isLoading) return <div className="flex justify-center py-10"><LoadingSpinner size="lg" /></div>
   if (isError) return <EmptyState title="Couldn't load payments report" />
   if (!data) return null
@@ -679,10 +958,10 @@ function PaymentsReport({ queryString }: { queryString: string }) {
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {data.byMethod.length === 0 ? (
+              {sortedByMethod.length === 0 ? (
                 <p className="py-6 text-center text-sm text-muted-foreground">No payment activity in this range</p>
               ) : (
-                data.byMethod.map((m) => (
+                sortedByMethod.map((m) => (
                   <div key={m.method} className="flex items-center justify-between rounded-lg border border-slate-200 p-3">
                     <div>
                       <p className="text-sm font-semibold">{methodLabels[m.method] || m.method}</p>
@@ -696,7 +975,7 @@ function PaymentsReport({ queryString }: { queryString: string }) {
                   </div>
                 ))
               )}
-              {data.byMethod.length > 0 && (
+              {sortedByMethod.length > 0 && (
                 <div className="mt-3 flex items-center justify-between rounded-lg bg-emerald-50 p-3 border-2 border-emerald-200">
                   <p className="text-sm font-bold text-emerald-900">Total Collected</p>
                   <p className="text-xl font-extrabold text-emerald-700">{formatINR(data.collected)}</p>
@@ -758,36 +1037,37 @@ function PaymentsReport({ queryString }: { queryString: string }) {
             <table className="w-full text-sm">
               <thead className="border-b bg-slate-50 text-left">
                 <tr>
-                  <Th>Method</Th>
-                  <Th align="right">Transactions</Th>
-                  <Th align="right">Successful</Th>
-                  <Th align="right">Pending</Th>
-                  <Th align="right">Failed</Th>
-                  <Th align="right">Refunded</Th>
-                  <Th align="right">Total</Th>
+                  <SortableTh sortKey="method" activeKey={sortKey} direction={sortDir} onSort={toggleSort}>Method</SortableTh>
+                  <SortableTh sortKey="count" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Transactions</SortableTh>
+                  <SortableTh sortKey="collected" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Successful</SortableTh>
+                  <SortableTh sortKey="pending" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Pending</SortableTh>
+                  <SortableTh sortKey="failed" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Failed</SortableTh>
+                  <SortableTh sortKey="refunded" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Refunded</SortableTh>
+                  <SortableTh sortKey="total" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Total</SortableTh>
                 </tr>
               </thead>
               <tbody>
-                {data.byMethod.map((m) => (
-                  <tr key={m.method} className="border-b last:border-0 hover:bg-slate-50">
-                    <Td className="font-medium">{methodLabels[m.method] || m.method}</Td>
-                    <Td align="right">{m.count}</Td>
-                    <Td align="right" className="font-medium text-emerald-700">{formatINR(m.collected)}</Td>
-                    <Td align="right" className="text-amber-600">{m.pending > 0 ? formatINR(m.pending) : '—'}</Td>
-                    <Td align="right" className="text-red-600">{m.failed > 0 ? formatINR(m.failed) : '—'}</Td>
-                    <Td align="right" className="text-purple-600">{m.refunded > 0 ? formatINR(m.refunded) : '—'}</Td>
-                    <Td align="right" className="font-bold">{formatINR(m.total)}</Td>
-                  </tr>
-                ))}
-                {data.byMethod.length === 0 && (
+                {sortedByMethod.length === 0 ? (
                   <tr><td colSpan={7} className="py-8 text-center text-sm text-muted-foreground">No payment activity in this range</td></tr>
+                ) : (
+                  sortedByMethod.map((m) => (
+                    <tr key={m.method} className="border-b last:border-0 hover:bg-slate-50">
+                      <Td className="font-medium">{methodLabels[m.method] || m.method}</Td>
+                      <Td align="right">{m.count}</Td>
+                      <Td align="right" className="font-medium text-emerald-700">{formatINR(m.collected)}</Td>
+                      <Td align="right" className="text-amber-600">{m.pending > 0 ? formatINR(m.pending) : '—'}</Td>
+                      <Td align="right" className="text-red-600">{m.failed > 0 ? formatINR(m.failed) : '—'}</Td>
+                      <Td align="right" className="text-purple-600">{m.refunded > 0 ? formatINR(m.refunded) : '—'}</Td>
+                      <Td align="right" className="font-bold">{formatINR(m.total)}</Td>
+                    </tr>
+                  ))
                 )}
               </tbody>
-              {data.byMethod.length > 0 && (
+              {sortedByMethod.length > 0 && (
                 <tfoot className="border-t-2 bg-orange-50 font-bold">
                   <tr>
                     <Td>Total</Td>
-                    <Td align="right">{data.byMethod.reduce((s, m) => s + m.count, 0)}</Td>
+                    <Td align="right">{sortedByMethod.reduce((s, m) => s + m.count, 0)}</Td>
                     <Td align="right" className="text-emerald-700">{formatINR(data.collected)}</Td>
                     <Td align="right" className="text-amber-600">{formatINR(data.pending)}</Td>
                     <Td align="right" className="text-red-600">{formatINR(data.failed)}</Td>
@@ -843,6 +1123,45 @@ function Th({ children, align = 'left' }: { children: React.ReactNode; align?: '
   return (
     <th className={`px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground ${align === 'right' ? 'text-right' : ''}`}>
       {children}
+    </th>
+  )
+}
+
+function SortableTh({
+  children,
+  sortKey,
+  activeKey,
+  direction,
+  onSort,
+  align = 'left',
+}: {
+  children: React.ReactNode
+  sortKey: string
+  activeKey: string
+  direction: SortDir
+  onSort: (key: string) => void
+  align?: 'left' | 'right'
+}) {
+  const isActive = sortKey === activeKey
+  return (
+    <th
+      className={`px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground select-none cursor-pointer hover:bg-slate-100 transition-colors ${align === 'right' ? 'text-right' : ''}`}
+      onClick={() => onSort(sortKey)}
+    >
+      <span className={`inline-flex items-center gap-1 ${align === 'right' ? 'flex-row-reverse' : ''}`}>
+        <span>{children}</span>
+        {isActive ? (
+          direction === 'asc' ? (
+            <ArrowUp className="h-3 w-3 text-orange-600" />
+          ) : (
+            <ArrowDown className="h-3 w-3 text-orange-600" />
+          )
+        ) : (
+          <span className="inline-flex h-3 w-3 flex-col items-center justify-center opacity-0 group-hover:opacity-30">
+            {/* spacer keeps column widths stable when sort is inactive */}
+          </span>
+        )}
+      </span>
     </th>
   )
 }

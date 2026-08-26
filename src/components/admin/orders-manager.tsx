@@ -33,8 +33,8 @@ import { PaymentStatusBadge } from '@/components/restaurant/payment-status-badge
 import { Price, formatINR } from '@/components/restaurant/price'
 import { VegBadge } from '@/components/restaurant/veg-badge'
 import { EmptyState, LoadingSpinner } from '@/components/restaurant/loading-states'
-import { useAdminOrders, useAdminOrder, useUpdateOrderStatus, useRequestPayment, api } from '@/hooks/api'
-import { Search, Filter, X, Clock, ChefHat, CheckCircle2, BellRing, Utensils, XCircle, Phone, User, CreditCard } from 'lucide-react'
+import { useAdminOrders, useAdminOrder, useUpdateOrderStatus, useRequestPayment, useMarkCashPaid, api } from '@/hooks/api'
+import { Search, Filter, X, Clock, ChefHat, CheckCircle2, BellRing, Utensils, XCircle, Phone, User, CreditCard, Banknote } from 'lucide-react'
 import { toast } from 'sonner'
 import type { OrderStatus } from '@/lib/types'
 
@@ -208,6 +208,7 @@ function OrderDetailSheet({
   const { data: order, isLoading } = useAdminOrder(orderId)
   const updateStatus = useUpdateOrderStatus()
   const requestPayment = useRequestPayment()
+  const markCashPaid = useMarkCashPaid()
   const [cancelOpen, setCancelOpen] = useState(false)
   const [cancelReason, setCancelReason] = useState('')
 
@@ -255,6 +256,26 @@ function OrderDetailSheet({
       toast.error(err.message || 'Failed to request payment')
     }
   }
+
+  const handleMarkCashPaid = async (method: 'CASH' | 'COUNTER' = 'CASH') => {
+    if (!order) return
+    try {
+      const res = await markCashPaid.mutateAsync({ id: order.id, method })
+      toast.success(
+        `Marked as paid in ${method === 'COUNTER' ? 'counter' : 'cash'} by ${res.receivedBy}`,
+      )
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to mark as paid')
+    }
+  }
+
+  // Mark-as-cash is available whenever the order is unpaid AND the user is
+  // waiter/owner/manager/cashier (the API enforces PAYMENT.VERIFY permission).
+  // It covers both pre-payment (PENDING_PAYMENT) and post-payment (SERVED).
+  const canMarkCashPaid =
+    order &&
+    order.paymentStatus !== 'PAID' &&
+    ['PENDING_PAYMENT', 'NEW', 'ACCEPTED', 'PREPARING', 'READY', 'SERVED'].includes(order.status)
 
   return (
     <>
@@ -317,6 +338,30 @@ function OrderDetailSheet({
                   <CreditCard className="mr-1.5 inline h-4 w-4" />
                   Post-payment requested — waiting for the customer to pay
                   ₹{order.grandTotal.toFixed(0)} after receiving the order.
+                </div>
+              )}
+
+              {/* Cash-received-by info — shown when the order was paid in cash */}
+              {order.paymentStatus === 'PAID' && order.cashReceivedByName && (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+                  <Banknote className="mr-1.5 inline h-4 w-4" />
+                  Paid in {order.paymentMethod === 'COUNTER' ? 'counter' : 'cash'} by{' '}
+                  <strong>{order.cashReceivedByName}</strong>
+                  {order.cashReceivedAt && (
+                    <span className="text-emerald-700">
+                      {' '}on {new Date(order.cashReceivedAt).toLocaleString('en-IN')}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* PENDING_PAYMENT banner — order is hidden from the kitchen until paid */}
+              {order.status === 'PENDING_PAYMENT' && (
+                <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                  <Clock className="mr-1.5 inline h-4 w-4" />
+                  Awaiting customer payment — this order is hidden from the
+                  kitchen until the customer pays. Once paid, it will
+                  automatically move to <strong>NEW</strong> status.
                 </div>
               )}
 
@@ -399,6 +444,37 @@ function OrderDetailSheet({
                       Collect payment after order received
                     </Button>
                   )}
+                </div>
+              )}
+
+              {/* Mark-as-cash buttons — waiter / owner / manager / cashier can
+                  mark the order as paid in cash (or at counter). The acting
+                  user's name is recorded for the payments report. */}
+              {canMarkCashPaid && (
+                <div className="space-y-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                    Mark as paid (recorded with your name)
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      variant="outline"
+                      className="border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                      disabled={markCashPaid.isPending}
+                      onClick={() => handleMarkCashPaid('CASH')}
+                    >
+                      <Banknote className="mr-2 h-4 w-4" />
+                      Paid in cash
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                      disabled={markCashPaid.isPending}
+                      onClick={() => handleMarkCashPaid('COUNTER')}
+                    >
+                      <Banknote className="mr-2 h-4 w-4" />
+                      Paid at counter
+                    </Button>
+                  </div>
                 </div>
               )}
 

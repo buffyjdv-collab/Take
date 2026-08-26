@@ -715,7 +715,7 @@ function CategoryEditor({
 // ---------------------------------------------------------------------------
 
 const ACCEPTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml']
-const MAX_FILE_SIZE = 2 * 1024 * 1024 // 2 MB
+const MAX_FILE_SIZE = 5 * 1024 * 1024 // 5 MB (matches /api/admin/upload)
 
 function ImageUploader({
   value,
@@ -726,33 +726,57 @@ function ImageUploader({
 }) {
   const [uploading, setUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  const [lastError, setLastError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const uploadFile = async (file: File) => {
-    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
-      toast.error(`Unsupported file type: ${file.type}. Use PNG, JPEG, WebP, GIF, or SVG.`)
+    setLastError(null)
+    // Normalise the MIME — some browsers send "image/jpg" instead of "image/jpeg"
+    const fileMime = (file.type || '').toLowerCase().replace('image/jpg', 'image/jpeg')
+    if (!ACCEPTED_IMAGE_TYPES.includes(fileMime)) {
+      const msg = `Unsupported file type: ${file.type || 'unknown'}. Use PNG, JPEG, WebP, GIF, or SVG.`
+      setLastError(msg)
+      toast.error(msg)
+      return
+    }
+    if (file.size === 0) {
+      const msg = 'File is empty.'
+      setLastError(msg)
+      toast.error(msg)
       return
     }
     if (file.size > MAX_FILE_SIZE) {
-      toast.error(`File too large (max ${MAX_FILE_SIZE / 1024 / 1024}MB).`)
+      const msg = `File too large (${(file.size / 1024 / 1024).toFixed(2)}MB). Max ${MAX_FILE_SIZE / 1024 / 1024}MB.`
+      setLastError(msg)
+      toast.error(msg)
       return
     }
     setUploading(true)
     try {
       const formData = new FormData()
-      formData.append('file', file)
+      // IMPORTANT: the field name MUST be "file" — the server reads form.get('file').
+      formData.append('file', file, file.name)
       const res = await fetch('/api/admin/upload', {
         method: 'POST',
         body: formData,
+        // Do NOT set Content-Type manually — the browser sets it with the
+        // correct multipart boundary automatically when we pass FormData.
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok || !json?.data?.url) {
-        throw new Error(json?.error || `Upload failed (${res.status})`)
+        const msg =
+          json?.error ||
+          `Upload failed (HTTP ${res.status} ${res.statusText})`
+        throw new Error(msg)
       }
       onChange(json.data.url)
       toast.success('Image uploaded')
     } catch (err: any) {
-      toast.error(err.message || 'Upload failed')
+      const msg = err.message || 'Upload failed'
+      setLastError(msg)
+      // Use a longer-lived error toast so the user can read the full message
+      toast.error(msg, { duration: 6000 })
+      console.error('[ImageUploader] upload failed:', err)
     } finally {
       setUploading(false)
     }
@@ -825,7 +849,7 @@ function ImageUploader({
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span>PNG · JPEG · WebP · GIF · SVG</span>
             <span>•</span>
-            <span>max 2 MB</span>
+            <span>max 5 MB</span>
             {value && (
               <>
                 <span>•</span>
@@ -842,6 +866,11 @@ function ImageUploader({
           {value && /^\/uploads\//i.test(value) && (
             <p className="text-xs text-emerald-700">
               ✓ Uploaded to {value}
+            </p>
+          )}
+          {lastError && (
+            <p className="text-xs text-red-600">
+              ⚠ {lastError}
             </p>
           )}
         </div>

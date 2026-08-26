@@ -174,6 +174,8 @@ export function CustomerApp({ token }: { token: string }) {
           <MenuList
             categories={categories}
             items={items}
+            activeCategoryId={activeCategoryId}
+            onActiveCategoryChange={setActiveCategoryId}
             onSelectItem={(id) => setActiveItemId(id)}
           />
         </>

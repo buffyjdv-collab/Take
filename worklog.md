@@ -211,3 +211,196 @@ Stage Summary:
 - Payment timing: restaurant owner can request pre-payment (before accept) or post-payment (after served) via dedicated buttons; customer tracking UI shows prominent payment panel with UPI/Card/Counter options; settings include requirePrePayment/requirePostPayment auto-flags
 - Menu image upload: new /api/admin/upload endpoint + drag/drop ImageUploader component in menu editor with preview and 2MB validation
 - All changes TypeScript-clean; Prisma client regenerated; database schema synced
+
+---
+Task ID: 3
+Agent: general-purpose
+Task: Add "Platform Fee" section to restaurant owner's reports (5th tab)
+
+Work Log:
+- Read worklog.md to understand prior work (Tasks 1, 5-18, 20-21, mt-1..13, r-1..12, RBAC-FEATURES) — confirmed PlatformFee model exists in schema.prisma and 4 report routes already exist at /api/admin/reports/{sales,products,categories,payments}
+- Read existing reports-manager.tsx (856 lines) to understand the existing Tabs/KpiCard/Th/Td pattern, fetch+useQuery shape, and visual style
+- Read /api/admin/reports/payments/route.ts, /api/platform/fees/route.ts, /lib/date-range.ts, /lib/format.ts, /lib/api-helpers.ts (requirePermission, scopeRestaurantId, ok, fail signatures), and /lib/platform-fee.ts (FeeType enum values: PERCENTAGE / FIXED_PER_ORDER / MONTHLY_SUBSCRIPTION / HYBRID; payer values: RESTAURANT / CUSTOMER / SPLIT) to mirror conventions
+- Verified PlatformFee model fields in prisma/schema.prisma: id, orderId, restaurantId, feeType, percentageRate, fixedAmount, baseAmount, grossFee, feeAmount, payer, customerPortion, restaurantPortion, status, collectedAt, refundedAt, refundReason, createdAt, updatedAt
+- Created new GET endpoint /api/admin/reports/platform-fee/route.ts that:
+  * Uses requirePermission('reports.view') + scopeRestaurantId(user, sp.get('restaurantId')) (same pattern as the other report routes)
+  * Uses resolveDateRange(range, from, to) from '@/lib/date-range'
+  * Calls db.platformFee.findMany with `where: { restaurantId (when set), createdAt: { gte, lte } }` and selects the order relation for orderNumber
+  * Aggregates totals by status: totalCollected (COLLECTED), totalPending (PENDING), totalRefunded (REFUNDED), totalWaived (WAIVED)
+  * Sums restaurantPortion and customerPortion from COLLECTED fees only
+  * Builds byFeeType breakdown (feeType → {amount, count}) sorted by amount desc
+  * Builds byPayer breakdown (payer → {amount, count}) sorted by amount desc
+  * Returns recentFees (top 20, newest first): { id, orderNumber, feeType, feeAmount, baseAmount, payer, status, collectedAt, createdAt }
+  * Returns response wrapped with ok() helper: { range, from, to, totalCollected, totalPending, totalRefunded, totalWaived, restaurantPortion, customerPortion, totalFees, byFeeType, byPayer, recentFees }
+- Edited src/components/admin/reports-manager.tsx:
+  * Added lucide-react imports: Receipt, Clock, RefreshCcw, Users, Store
+  * Added 5th TabsTrigger "platform-fee" with Receipt icon, changed TabsList from `grid-cols-2 sm:grid-cols-4` → `grid-cols-2 sm:grid-cols-5`
+  * Added TabsContent "platform-fee" rendering <PlatformFeeReport queryString={queryString} />
+  * Added new PlatformFeeReport component (before the SHARED COMPONENTS section) with:
+    - 4 KPI cards: Total collected (IndianRupee, green), Pending (Clock, orange), Refunded (RefreshCcw, purple), Restaurant portion (Store, red)
+    - Payer split banner: shows how the collected fee was shared between Restaurant (red) and Customer (emerald), with explanatory subtitle
+    - Side-by-side breakdown tables in a 2-col grid: "Breakdown by fee type" (Fee type | Orders | Amount) and "Breakdown by payer" (Payer | Orders | Amount), each with totals footer
+    - "Recent platform fees" table: Order (mono), Fee type, Base, Fee amount, Payer, Status (color-coded badge: COLLECTED=emerald, PENDING=amber, REFUNDED=violet, WAIVED=slate), Date
+    - FEE_TYPE_LABELS, PAYER_LABELS, FEE_STATUS_TONES maps for human-readable display
+    - Empty-state rows shown when byFeeType / byPayer / recentFees have no data
+    - Uses existing KpiCard, Th, Td shared helpers, formatINR, useQuery pattern matching the other reports
+- Ran `npx tsc --noEmit` and verified ZERO errors referencing `reports/platform-fee` or `reports-manager` (confirmed via grep filter). The remaining ~16 errors are all pre-existing in untouched files (tables/[id]/qr, signup, platform/metrics, platform/restaurants, page.tsx, bill-view, order-status-badge, lib/platform-fee.ts)
+
+Stage Summary:
+- Restaurant owners can now see platform fees collected from their orders via a dedicated "Platform Fee" tab (5th tab) on the Reports page
+- New endpoint GET /api/admin/reports/platform-fee reuses the existing requirePermission('reports.view') + scopeRestaurantId + resolveDateRange pattern — owners only see their own restaurant's fees; super admin can override via ?restaurantId=
+- Owners can see: total collected, pending, refunded, waived; restaurant vs customer portion split; breakdown by fee type (PERCENTAGE / FIXED_PER_ORDER / MONTHLY_SUBSCRIPTION / HYBRID); breakdown by payer (RESTAURANT / CUSTOMER / SPLIT); 20 most recent fee records with order number, base amount, fee amount, status badge, and date
+- Visual style matches existing reports: same KpiCard component, same Card/Table/Th/Td pattern, same orange-tinted totals footer, same color palette (orange/green/blue/purple/red)
+- Files created: 1 (src/app/api/admin/reports/platform-fee/route.ts, 134 lines)
+- Files modified: 1 (src/components/admin/reports-manager.tsx, +280 lines, now ~1136 lines)
+- TypeScript clean for the new/modified files; no regressions introduced
+
+---
+Task ID: 2
+Agent: general-purpose
+Task: Enhance staff-manager UI with search, filters, phone/branch display, reset-password action, summary stats
+
+Work Log:
+- Read worklog.md, staff-manager.tsx, hooks/api.ts (useAdminStaff), GET/PATCH /api/admin/staff routes, lib/format.ts, lib/validations.ts, lib/auth.ts to understand data shape (GET returns id/email/name/role/active/phone/restaurantId/branchId/createdAt/restaurant/branch), existing imports, and constraints
+- Confirmed PATCH /api/admin/staff/[id] accepts name, role, active, phone, branchId, password — no API changes needed
+- Rewrote src/components/admin/staff-manager.tsx (single-file UI enhancement) adding:
+  1. Search input (filters by name, email, or phone — case-insensitive, debounced via useMemo)
+  2. Role filter dropdown (All roles + all 6 roles from ALL_ROLES so super admin can filter to SUPER_ADMIN too)
+  3. Active/inactive filter dropdown (All / Active / Inactive)
+  4. Phone column in table (clickable tel: link, slate "—" when empty)
+  5. Branch column showing branch.name; for super admin, restaurant.name shown as secondary line or fallback
+  6. "Added" column showing formatRelative(createdAt) with full-date tooltip
+  7. "Last updated" hint in edit dialog — slate-50 boxed note with Clock icon showing "Added {relative} · {branch}" when editing existing staff
+  8. Reset-password inline action (KeyRound icon button per row) opening a compact dialog with just a new-password field, autofocus, Enter-to-submit, and a "Added {relative}" hint — PATCHes only { password }
+  9. Summary stat cards at top: Total Staff (Users/slate), Active (UserCheck/green), Inactive (UserX/red), By Role (top-4 role badges with counts)
+- Added "Clear filters" button that appears when any filter is active; header shows matching count when filtered
+- Empty-state for no matches (distinct from no staff at all) with a "Clear filters" action
+- Inactive users now show a small red "inactive" pill next to their name in addition to the Switch
+- Used only existing shadcn/ui components (Card, Button, Input, Label, Switch, Badge, Select, Dialog) and existing helpers (api, useAdminStaff, useSession, formatRelative, ROLE_LABELS, PERMISSIONS, ALL_ROLES, NON_SUPER_ROLES, hasPermission, canAccessRole); lucide-react icons (Search, Users, UserCheck, UserX, KeyRound, Clock, Plus, Pencil, Trash2, ShieldCheck); sonner toast
+- Preserved existing visual style: orange-600 primary buttons, slate borders, ROLE_TINT badge colors, existing edit/create dialog flow
+- Ran `npx tsc --noEmit 2>&1 | grep staff-manager` → zero errors; also verified zero errors across all components/admin/* files
+
+Stage Summary:
+- Staff manager upgraded from a basic table to a filterable, searchable directory with summary stats
+- All 9 required improvements implemented in a single file with no API changes
+- TypeScript clean (0 errors in staff-manager.tsx and all admin components)
+- Reused existing data already returned by GET /api/admin/staff (phone, branch.name, restaurant.name, createdAt) — no extra network requests
+- Reset-password action saves 3 clicks vs. opening the full edit dialog and scrolling to the password field
+
+---
+Task ID: 6
+Agent: general-purpose
+Task: Tenants CRUD edit + delete — add Edit and Delete actions to super admin Tenants page
+
+Work Log:
+- Read worklog.md, src/components/platform/platform-restaurants-manager.tsx, src/lib/validations.ts (platformUpdateTenantSchema), src/components/restaurant/confirm-dialog.tsx (ConfirmDialog API), src/components/ui/switch.tsx, src/lib/plans.ts, src/app/api/platform/restaurants/[id]/route.ts (PATCH + DELETE), src/app/api/platform/restaurants/route.ts (GET list) to understand data shape and existing patterns
+- Confirmed PATCH /api/platform/restaurants/[id] accepts name/tagline/address/city/phone/email/isOpen/plan/subscriptionStatus/suspendReason (matching platformUpdateTenantSchema) and DELETE /api/platform/restaurants/[id] cascade-deletes the tenant — no API changes needed for those routes
+- Added `address` field to the GET /api/platform/restaurants list response + Tenant interface so the Edit dialog can pre-fill address (single-line, backward-compatible addition; list endpoint already returned most Restaurant fields)
+- Updated imports in platform-restaurants-manager.tsx: added DialogDescription, Switch, ConfirmDialog, and lucide icons Pencil + AlertTriangle (Trash2 was already imported)
+- Added new state: `editTarget` (Tenant | null), `deleteTarget` (Tenant | null)
+- Added `deleteMutation` (useMutation) — calls DELETE /api/platform/restaurants/[id], on success toasts "Tenant deleted", invalidates ['platform-tenants'] and ['platform-metrics'], and clears deleteTarget
+- Added two new buttons to each tenant card's action row (after View, before Suspend/Activate):
+  * "Edit" button (outline, Pencil icon) → opens EditTenantDialog
+  * "Delete" button (outline, red: border-red-200/text-red-700/hover:bg-red-50, Trash2 icon) → opens ConfirmDialog
+- Updated TenantDetailDialog signature to accept `onEdit: (t: Tenant) => void` and added an orange "Edit" button (Pencil icon) in its DialogFooter that closes the detail dialog and opens the EditTenantDialog
+- Created new `EditTenantDialog` component (mounted with `key={editTarget.id}` to reset form state per tenant):
+  * Pre-fills all fields from tenant's current values (name, tagline, address, city, phone, email, plan, subscriptionStatus, isOpen, suspendReason)
+  * Fields: Restaurant name + Tagline (2-col grid), Address (Textarea), City + Phone + Email (3-col grid), Plan Select (TRIAL/STARTER/PRO/ENTERPRISE), Subscription status Select (ACTIVE/TRIALING/PAST_DUE/SUSPENDED/CANCELLED), isOpen Switch with "Open for orders" label and helper text
+  * Conditionally shows "Suspend reason" Textarea only when subscriptionStatus === 'SUSPENDED'
+  * "Save changes" button PATCHes /api/platform/restaurants/[id] with the updated fields (omits empty optional fields, sends suspendReason only when status is SUSPENDED), on success toasts "Tenant updated" + invalidates ['platform-tenants'] and ['platform-metrics'] + closes dialog
+  * DialogDescription subtitle shows tenant name for clarity
+- Wired the existing ConfirmDialog for delete confirmation:
+  * Title: "Delete {name}?"
+  * Description: AlertTriangle icon + "permanently delete ... cascade-delete all of its data. This action cannot be undone." + bulleted list of what will be deleted using tenant.counts (orders, menu items + categories + modifier groups, tables + QR codes, staff, branches, payments/invoices/customers/service requests/settings/audit logs)
+  * confirmLabel "Delete tenant", variant "destructive"
+  * onConfirm fires deleteMutation.mutate(deleteTarget.id)
+- Visual style matches existing conventions: orange-600 hover:bg-orange-700 for primary (Edit, Save), red destructive styling for Delete
+- Ran `cd /home/z/my-project/Take && npx tsc --noEmit 2>&1 | grep platform-restaurants-manager` → ZERO matches (zero errors in the edited file). The other pre-existing TS errors in the repo (e.g. route.ts(158,9), platform-fees-collected.tsx(247,9), bill-view.tsx) are unrelated to this task and were present before.
+
+Stage Summary:
+- Super admin Tenants page now has full CRUD: Create (existing), Read (View + TenantDetailDialog), Update (Edit button → EditTenantDialog → PATCH), Delete (Delete button → ConfirmDialog with cascade-deletion warning → DELETE)
+- Edit dialog pre-fills all editable fields, supports plan + subscription status changes, isOpen toggle, and conditionally collects a suspend reason when status is set to SUSPENDED (server automatically manages suspendedAt/suspendedReason timestamps)
+- Delete confirmation clearly warns that ALL tenant data (orders, menu, tables, staff, branches, payments, invoices, customers, service requests, settings, audit logs) will be cascade-deleted and that the action is irreversible
+- Both successful edit and delete invalidate the ['platform-tenants'] and ['platform-metrics'] query keys so the list and dashboard refresh automatically
+- The only API surface change is a backward-compatible addition of `address` to the GET /api/platform/restaurants list response (PATCH and DELETE routes untouched, as instructed)
+- TypeScript clean for the edited file
+
+---
+Task ID: 5
+Agent: general-purpose subagent
+Task: Make super admin "Platform Fees Collected" page collapsible restaurant-wise with totals, sortable, and groupable by day/month/year
+
+Work Log:
+- Read worklog.md, platform-fees-collected.tsx, /api/platform/fees/route.ts, collapsible.tsx, format.ts, date-range.ts
+- Updated /api/platform/fees/route.ts:
+  * Added `groupBy` query param (`day` | `month` | `year`, default `month`) — read via `req.nextUrl.searchParams`
+  * Added `getPeriodKey(date, groupBy)` helper (YYYY-MM-DD / YYYY-MM / YYYY) and `formatPeriodLabel()` export
+  * Added `byTenantByPeriod` aggregation: a Map keyed by `restaurantId__period` producing per-restaurant per-period buckets with collected / pending / refunded / customerPaid / restaurantPaid / feeCount
+  * Bumped `take` from 500 to 2000 so we have enough data for monthly/yearly buckets
+  * Returns `groupBy` in the response payload so the client knows how periods were bucketed server-side
+  * Existing fields (byTenant, byFeeType, byPayer, recentFees, totals) unchanged
+- Rewrote src/components/platform/platform-fees-collected.tsx:
+  * Added "Group by" Select next to the existing range Select in the header (Day / Month / Year, default Month) — both re-trigger the React Query via `queryKey: ['platform-fees', range, groupBy]`
+  * "Fees by tenant" table is now COLLAPSIBLE per restaurant:
+    - Each restaurant is wrapped in a `<Collapsible asChild>` rendering a `<tbody>` (valid HTML — multiple tbodies per table)
+    - The trigger row has a chevron icon on the left (ChevronRight when collapsed, ChevronDown when expanded) using `CollapsibleTrigger asChild` -> `<tr>`
+    - When expanded, additional `<CollapsibleContent asChild>` -> `<tr>` rows render the per-period breakdown (period label with Calendar icon + collected / pending / refunded / restaurantPaid / customerPaid for that period)
+    - Collapsed view shows just the restaurant total (preserving the previous behaviour)
+    - Added "Expand all" / "Collapse all" buttons above the table (ChevronsUpDown / ChevronsDownUp icons) with an "N / M expanded" counter
+  * Added a new "Refunded" numeric column (was missing from the previous table) so all 5 sums requested in the task are visible
+  * Added a sticky-style Total row in `<tfoot>` summing feeCount / collected / pending / refunded / restaurantPaid / customerPaid across all tenants — visible even when all restaurants are collapsed
+  * Every numeric column is now SORTABLE via a `SortableTh` component:
+    - Click header → sort desc; click again → sort asc
+    - Active column shows ▲ (ArrowUp) or ▼ (ArrowDown) in orange-700; inactive columns show a faint ▼ on row hover
+    - Default sort: collected desc (preserves previous behaviour)
+  * "Recent fee transactions" table now has a Group-by toggle (None / Day / Month / Year):
+    - When a group is selected, fees are bucketed client-side by period key (newest period first)
+    - Each bucket is a collapsible `<tbody>` showing the period label, fee count badge, and total fee amount in the trigger row, with individual fee rows inside `CollapsibleContent`
+    - When "None" is selected, fees render as flat rows (original behaviour)
+  * Used only existing shadcn/ui components (Card, Button, Badge, Select, Collapsible) and lucide-react icons (ChevronDown, ChevronRight, ArrowUp, ArrowDown, Calendar, ChevronsDownUp, ChevronsUpDown, Building2, IndianRupee, TrendingUp, Loader2)
+  * Used `formatINR` from `@/lib/format` for all currency
+  * Preserved all existing functionality: KPI cards (collected / pending / refunded / total fees), "Fees by tenant (top 10)" bar chart, "By payer" pie chart
+- Verification: `npx tsc --noEmit 2>&1 | grep -E "(platform-fees-collected|platform/fees/route)"` → zero matches (no errors in modified files). The 16 pre-existing TS errors in unrelated files (signup/route.ts, restaurants/route.ts, bill-view.tsx, etc.) remain untouched.
+
+Stage Summary:
+- The super admin Platform Fees Collected page now supports three new dimensions of analysis:
+  1. Time-period grouping (day/month/year) for both the by-tenant breakdown and the recent transactions list
+  2. Collapsible per-restaurant rows with on-demand period drill-down — collapsed view still shows restaurant totals and the grand total row at the bottom
+  3. Click-to-sort on every numeric column (fees, collected, pending, refunded, restaurant paid, customer paid) with ▲/▼ indicator
+- API extended with `?groupBy=` param returning a new `byTenantByPeriod[]` array; `take` bumped to 2000 to cover yearly/monthly aggregations
+- All existing functionality (KPI cards, charts, by-payer pie) preserved; only shadcn/ui + lucide-react used; orange-600 primary maintained throughout
+
+---
+Task ID: 4
+Agent: sub-agent (general-purpose)
+Task: Make restaurant reports (Sales, Products, Categories, Payments) collapsible by date/month and sortable by columns
+
+Work Log:
+- Read worklog.md and the existing reports-manager.tsx (856 lines, 4 report sub-components: SalesReport, ProductsReport, CategoriesReport, PaymentsReport) plus the existing Collapsible component at src/components/ui/collapsible.tsx (Radix UI wrapper) and an existing usage pattern in src/components/platform/platform-fees-collected.tsx (Collapsible + asChild + tbody/tr — confirmed this pattern works in the codebase)
+- Added imports: useMemo (from react), Collapsible/CollapsibleTrigger/CollapsibleContent (from '@/components/ui/collapsible'), and 5 new lucide-react icons (ChevronDown, ChevronRight, ChevronUp, ArrowUp, ArrowDown)
+- Added new types: GroupBy = 'day' | 'month', SortDir = 'asc' | 'desc'
+- Added a standalone generic `sortRows<T>(rows, sortKey, sortDir)` helper that handles both string (localeCompare — correct for ISO dates like YYYY-MM-DD and YYYY-MM) and numeric comparison
+- Added a `useSort(defaultKey, defaultDir)` hook returning `{ sortKey, sortDir, toggleSort }` — Excel-style toggle: clicking the active column flips direction, clicking a new column defaults to ascending
+- Added helper functions: `getMonthKey(dateStr)` returns YYYY-MM from YYYY-MM-DD; `formatMonthLabel(monthKey)` formats YYYY-MM as "Aug 2025" using en-IN locale
+- Parent ReportsManager: added `groupBy` state (default 'day'); added a "Group by" Select dropdown (Day / Month) next to the date range filter; appended `&groupBy=${groupBy}` to the shared queryString (passed to all 4 report APIs — APIs ignore the unknown param, aggregation is client-side); passes `groupBy` prop only to SalesReport (the other reports ignore it)
+- SalesReport changes:
+  * Added `useSort('date', 'desc')` hook for sortable columns (default date desc as before)
+  * Added `expandedMonths: Set<string>` state for collapse tracking
+  * Added `aggregateSalesByMonth(rows)` helper that groups day rows by month, sums orders/grossSales/discount/refund/netSales/tax/total, and sorts days within each month chronologically (date asc)
+  * Memoized monthGroups, sortedMonthGroups, sortedDayRows with useMemo (deps: data, sortKey, sortDir)
+  * Added `allMonthsExpanded` flag and `toggleAllMonths()`/`toggleOneMonth(monthKey, open)` handlers
+  * Day view: renders plain sortable rows (replaces the prior unsorted map)
+  * Month view: renders one `<Collapsible asChild>` per month wrapping a `<tbody className="group">`; the header row is `<CollapsibleTrigger asChild>` (click anywhere on the row toggles); each day row is `<CollapsibleContent asChild>` (auto-hidden when collapsed); month header shows chevron (ChevronDown if open, ChevronRight if closed) + "Aug 2025" label + aggregated values; expanded day rows show a ↳ prefix and use smaller text + subtle background to indicate they are sub-rows
+  * The Sales table CardHeader now has a "Collapse all"/"Expand all" button (visible only when groupBy=month and there is data) with a ChevronUp/ChevronDown icon
+  * Empty-state rows added for both day and month views
+- ProductsReport: added `useSort('quantity', 'desc')` (default qty desc); replaced all 6 `<Th>` headers with `<SortableTh>` (Item→name, Category→categoryName, Qty→quantity, Gross Sales→grossSales, Discount→discount, Net Sales→netSales); rows now render from `sortedItems` memo; added empty-state row
+- CategoriesReport: added `useSort('revenue', 'desc')` (default revenue desc); 4 of 5 headers sortable (Category→name, Qty→quantity, Revenue→revenue, Share→percentage); the Distribution column keeps plain `<Th>` (visual-only bar, not sortable); rows render from `sortedCategories`; bar colour looked up from original API index so pie chart + bar colours stay stable across sorts; added empty-state row
+- PaymentsReport: added `useSort('collected', 'desc')` (default collected desc); all 7 headers sortable (Method→method, Transactions→count, Successful→collected, Pending→pending, Failed→failed, Refunded→refunded, Total→total); rows render from `sortedByMethod`; both the "Payment & Collection by method" card list and the "Detailed breakdown" table use the sorted order; added empty-state row
+- Added new `SortableTh` shared component (alongside the existing `Th`/`Td`/`KpiCard`): renders a `<th>` with cursor-pointer + hover:bg-slate-100; shows `ArrowUp` (asc, orange) or `ArrowDown` (desc, orange) icon next to the active sort column; uses an invisible 12px spacer for inactive columns to keep column widths stable; supports `align="right"` (uses flex-row-reverse to put the icon on the correct side for right-aligned numeric columns)
+- Verification: `cd /home/z/my-project/Take && npx tsc --noEmit 2>&1 | grep reports-manager` → ZERO errors. The 16 remaining tsc errors are all pre-existing in untouched files (confirmed against prior worklog note: "16 pre-existing errors in untouched files remain")
+
+Stage Summary:
+- All 4 restaurant reports now support Excel/Swiggy-style sortable column headers with ▲▼ arrow indicators
+- Sales report additionally supports Day/Month grouping via a top-level "Group by" dropdown; month view shows collapsible rows (click to expand → see underlying days), with a Collapse all / Expand all toggle in the table header
+- Implementation honours all task constraints: API responses unchanged (aggregation is client-side), KPI cards/charts/CSV export preserved, only existing shadcn/ui components used, visual style matches existing reports, Collapsible component from '@/components/ui/collapsible' used (same asChild+tbody pattern already established in platform-fees-collected.tsx)
+- File grew from 856 → 1175 lines (319 added: SortableTh component, useSort hook, sortRows helper, month aggregation logic, collapse state, and 4 report table headers upgraded to sortable)

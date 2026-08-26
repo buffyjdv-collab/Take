@@ -62,6 +62,7 @@ export async function GET(req: Request) {
       slug: r.slug,
       name: r.name,
       tagline: r.tagline,
+      address: r.address,
       city: r.city,
       phone: r.phone,
       email: r.email,

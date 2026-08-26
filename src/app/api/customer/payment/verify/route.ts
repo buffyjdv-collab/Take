@@ -48,22 +48,63 @@ export async function POST(req: NextRequest) {
       verifiedAt: new Date(),
       failureReason: null,
     },
-    include: { order: { include: { restaurant: true, table: true, customer: true } } },
+    include: { order: { include: { restaurant: { include: { settings: true } }, table: true, customer: true } } },
   })
 
   const order = updated.order
+  const wasPendingPayment = order.status === 'PENDING_PAYMENT'
+
   // Update order paymentStatus
+  //   - If the order was PENDING_PAYMENT (pre-payment required), now that the
+  //     customer has paid we transition it to NEW (or ACCEPTED if auto-accept
+  //     is on) so it appears in the kitchen/orders module for processing.
+  //   - If the order was already SERVED, mark it COMPLETED.
+  const autoAccept = order.restaurant.settings?.autoAcceptOrders === true
+  const newStatus = wasPendingPayment
+    ? autoAccept
+      ? 'ACCEPTED'
+      : 'NEW'
+    : order.status === 'SERVED'
+    ? 'COMPLETED'
+    : order.status
+
+  const orderPatch: Record<string, unknown> = {
+    paymentStatus: 'PAID',
+    paymentMethod: payment.method,
+  }
+  if (newStatus !== order.status) {
+    orderPatch.status = newStatus
+    if (newStatus === 'ACCEPTED') {
+      orderPatch.acceptedAt = new Date()
+    } else if (newStatus === 'COMPLETED') {
+      orderPatch.completedAt = new Date()
+    } else if (newStatus === 'NEW') {
+      // Reset placedAt to "now" so the order appears at the top of the queue
+      // when it transitions out of PENDING_PAYMENT.
+      orderPatch.placedAt = new Date()
+    }
+  }
+
   await db.order.update({
     where: { id: order.id },
-    data: {
-      paymentStatus: 'PAID',
-      paymentMethod: payment.method,
-      // If order was already SERVED, mark COMPLETED
-      ...(order.status === 'SERVED'
-        ? { status: 'COMPLETED', completedAt: new Date() }
-        : {}),
-    },
+    data: orderPatch,
   })
+
+  // If the order just transitioned out of PENDING_PAYMENT, fire the kitchen
+  // notification now (it was suppressed at order creation time).
+  if (wasPendingPayment && order.restaurant.settings?.notifyKitchenOnNewOrder !== false) {
+    await db.notification.create({
+      data: {
+        restaurantId: order.restaurantId,
+        target: 'KITCHEN',
+        type: 'NEW_ORDER',
+        title: `Order ${order.orderNumber} paid & confirmed`,
+        message: `Table ${order.table.number} • ₹${order.grandTotal.toFixed(0)} paid via ${payment.method}`,
+        orderId: order.id,
+        tableId: order.tableId,
+      },
+    })
+  }
 
   // Mark platform fee as COLLECTED
   await db.platformFee.updateMany({
@@ -120,6 +161,7 @@ export async function POST(req: NextRequest) {
   return ok({
     payment: updated,
     invoice,
-    orderCompleted: order.status === 'SERVED',
+    orderCompleted: newStatus === 'COMPLETED',
+    statusTransition: wasPendingPayment ? `${order.status} → ${newStatus}` : undefined,
   })
 }

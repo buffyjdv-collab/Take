@@ -25,18 +25,37 @@ export function FloatingCartButton({ onClick }: { onClick: () => void }) {
       >
         <button
           onClick={onClick}
-          className="flex w-full max-w-md items-center justify-between gap-3 rounded-full bg-orange-600 px-5 py-3 text-white shadow-xl shadow-orange-600/30 transition-transform hover:scale-[1.01]"
+          className="flex w-full max-w-md items-center justify-between gap-3 rounded-2xl bg-emerald-600 px-5 py-3 text-white shadow-xl shadow-emerald-600/30 transition-all hover:bg-emerald-700 hover:shadow-emerald-600/40 active:scale-[0.99]"
         >
-          <div className="flex items-center gap-2">
-            <div className="relative">
+          <div className="flex items-center gap-3">
+            <div className="relative flex h-9 w-9 items-center justify-center rounded-xl bg-white/15">
               <ShoppingBag className="h-5 w-5" />
-              <span className="absolute -right-2 -top-2 flex h-5 min-w-5 items-center justify-center rounded-full bg-white px-1 text-[10px] font-bold text-orange-600">
+              <motion.span
+                key={t?.itemCount || 0}
+                initial={{ scale: 1.4 }}
+                animate={{ scale: 1 }}
+                transition={{ type: 'spring', stiffness: 600, damping: 20 }}
+                className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-white px-1 text-[10px] font-bold text-emerald-700"
+              >
                 {t?.itemCount || 0}
-              </span>
+              </motion.span>
             </div>
-            <span className="font-semibold">View cart</span>
+            <span className="font-semibold tracking-tight">View cart</span>
           </div>
-          <span className="font-bold">₹{(t?.grandTotal || 0).toFixed(0)}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-lg font-bold">₹{(t?.grandTotal || 0).toFixed(0)}</span>
+            <svg
+              className="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M5 12h14M13 5l7 7-7 7" />
+            </svg>
+          </div>
         </button>
       </motion.div>
     </AnimatePresence>
