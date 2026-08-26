@@ -33,8 +33,8 @@ import { PaymentStatusBadge } from '@/components/restaurant/payment-status-badge
 import { Price, formatINR } from '@/components/restaurant/price'
 import { VegBadge } from '@/components/restaurant/veg-badge'
 import { EmptyState, LoadingSpinner } from '@/components/restaurant/loading-states'
-import { useAdminOrders, useAdminOrder, useUpdateOrderStatus, api } from '@/hooks/api'
-import { Search, Filter, X, Clock, ChefHat, CheckCircle2, BellRing, Utensils, XCircle } from 'lucide-react'
+import { useAdminOrders, useAdminOrder, useUpdateOrderStatus, useRequestPayment, api } from '@/hooks/api'
+import { Search, Filter, X, Clock, ChefHat, CheckCircle2, BellRing, Utensils, XCircle, Phone, User, CreditCard } from 'lucide-react'
 import { toast } from 'sonner'
 import type { OrderStatus } from '@/lib/types'
 
@@ -207,6 +207,7 @@ function OrderDetailSheet({
 }) {
   const { data: order, isLoading } = useAdminOrder(orderId)
   const updateStatus = useUpdateOrderStatus()
+  const requestPayment = useRequestPayment()
   const [cancelOpen, setCancelOpen] = useState(false)
   const [cancelReason, setCancelReason] = useState('')
 
@@ -224,6 +225,36 @@ function OrderDetailSheet({
   }
 
   const canCancel = order && ['NEW', 'ACCEPTED'].includes(order.status)
+  // Pre-payment: only available when the order is NEW (not yet accepted) and
+  // the customer hasn't paid yet. The restaurant owner is asking the customer
+  // to settle the bill BEFORE the kitchen accepts the order.
+  const canRequestPrePayment =
+    order &&
+    order.status === 'NEW' &&
+    order.paymentStatus !== 'PAID' &&
+    !order.prePaymentRequested
+  // Post-payment: available when the order has been SERVED (received by the
+  // customer) and not yet paid. The restaurant owner is asking the customer
+  // to settle the bill before leaving the table.
+  const canRequestPostPayment =
+    order &&
+    ['SERVED', 'READY'].includes(order.status) &&
+    order.paymentStatus !== 'PAID' &&
+    !order.postPaymentRequested
+
+  const handleRequestPayment = async (when: 'PRE' | 'POST') => {
+    if (!order) return
+    try {
+      await requestPayment.mutateAsync({ id: order.id, when })
+      toast.success(
+        when === 'PRE'
+          ? 'Asked customer to pay before we accept the order'
+          : 'Asked customer to pay now that the order is received',
+      )
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to request payment')
+    }
+  }
 
   return (
     <>
@@ -247,6 +278,48 @@ function OrderDetailSheet({
             </div>
           ) : (
             <div className="space-y-4 px-4 pb-10">
+              {/* Customer snapshot (name + phone collected at order placement) */}
+              {(order.customerName || order.customerPhone) && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                    Customer
+                  </p>
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                    {order.customerName && (
+                      <span className="inline-flex items-center gap-1.5 font-medium">
+                        <User className="h-3.5 w-3.5 text-slate-500" />
+                        {order.customerName}
+                      </span>
+                    )}
+                    {order.customerPhone && (
+                      <a
+                        href={`tel:${order.customerPhone}`}
+                        className="inline-flex items-center gap-1.5 text-orange-700 hover:underline"
+                      >
+                        <Phone className="h-3.5 w-3.5" />
+                        {order.customerPhone}
+                      </a>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Pre / post payment request banners */}
+              {order.prePaymentRequested && order.paymentStatus !== 'PAID' && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  <CreditCard className="mr-1.5 inline h-4 w-4" />
+                  Pre-payment requested — waiting for the customer to pay
+                  ₹{order.grandTotal.toFixed(0)} before the order is accepted.
+                </div>
+              )}
+              {order.postPaymentRequested && order.paymentStatus !== 'PAID' && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  <CreditCard className="mr-1.5 inline h-4 w-4" />
+                  Post-payment requested — waiting for the customer to pay
+                  ₹{order.grandTotal.toFixed(0)} after receiving the order.
+                </div>
+              )}
+
               {/* Items */}
               <div>
                 <h3 className="mb-2 text-sm font-semibold">Items</h3>
@@ -299,6 +372,35 @@ function OrderDetailSheet({
                 <h3 className="mb-2 text-sm font-semibold">Timeline</h3>
                 <Timeline order={order} />
               </div>
+
+              {/* Payment request buttons — restaurant owner can collect money
+                  before accepting the order (PRE) or after it's received (POST) */}
+              {(canRequestPrePayment || canRequestPostPayment) && (
+                <div className="space-y-2">
+                  {canRequestPrePayment && (
+                    <Button
+                      variant="outline"
+                      className="w-full border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100"
+                      disabled={requestPayment.isPending}
+                      onClick={() => handleRequestPayment('PRE')}
+                    >
+                      <CreditCard className="mr-2 h-4 w-4" />
+                      Collect payment before accepting
+                    </Button>
+                  )}
+                  {canRequestPostPayment && (
+                    <Button
+                      variant="outline"
+                      className="w-full border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                      disabled={requestPayment.isPending}
+                      onClick={() => handleRequestPayment('POST')}
+                    >
+                      <CreditCard className="mr-2 h-4 w-4" />
+                      Collect payment after order received
+                    </Button>
+                  )}
+                </div>
+              )}
 
               {/* Action buttons */}
               {canTransitionTo(order.status).length > 0 && (

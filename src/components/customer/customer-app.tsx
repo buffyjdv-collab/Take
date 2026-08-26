@@ -26,8 +26,18 @@ export function CustomerApp({ token }: { token: string }) {
   const [activeItemId, setActiveItemId] = useState<string | null>(null)
   const [cartOpen, setCartOpen] = useState(false)
   const [placedOrderId, setPlacedOrderId] = useState<string | null>(null)
+  // Tracks whether we just placed an order (one-shot). The hash-routing
+  // auto-redirect to #track should fire ONLY immediately after placement —
+  // not on every visit where a placedOrderId exists in sessionStorage.
+  // Without this guard, scanning a QR code for a table where a previous order
+  // exists locks the customer into the track view and they can never reach
+  // the menu (because the "Back to menu" button doesn't clear placedOrderId).
+  const [justPlaced, setJustPlaced] = useState(false)
 
   // Restore placed order from sessionStorage (so customer refresh keeps tracking)
+  // NOTE: this is for tracking convenience — it does NOT force navigation.
+  // The customer always lands on the menu view by default; they can opt to
+  // view an existing order's tracking page via the "Track order" button.
   useEffect(() => {
     const saved = sessionStorage.getItem(`order-${token}`)
     if (saved) setPlacedOrderId(saved)
@@ -42,7 +52,8 @@ export function CustomerApp({ token }: { token: string }) {
     }
   }, [data?.restaurant.id, data?.table.id, setScope])
 
-  // Hash-based view routing
+  // Hash-based view routing — the URL hash is the single source of truth.
+  // Empty hash → menu view. This means a fresh QR scan always opens the menu.
   useEffect(() => {
     const apply = () => {
       const h = window.location.hash.replace('#', '')
@@ -57,12 +68,15 @@ export function CustomerApp({ token }: { token: string }) {
     return () => window.removeEventListener('hashchange', apply)
   }, [])
 
-  // Sync placed order with hash routing
+  // One-shot: after the customer places an order, jump to the tracking view.
+  // We clear the `justPlaced` flag immediately so a later "Back to menu"
+  // click is not overridden.
   useEffect(() => {
-    if (placedOrderId && view === 'menu') {
+    if (justPlaced && placedOrderId) {
       window.location.hash = 'track'
+      setJustPlaced(false)
     }
-  }, [placedOrderId, view])
+  }, [justPlaced, placedOrderId])
 
   if (isLoading) {
     return (
@@ -168,7 +182,12 @@ export function CustomerApp({ token }: { token: string }) {
       {view === 'track' && placedOrderId && (
         <OrderTracking
           orderId={placedOrderId}
+          restaurant={restaurant}
           onBackToMenu={() => {
+            // "Back to menu" — go to menu view and clear the hash so a refresh
+            // doesn't drop the customer back into track. We deliberately do
+            // NOT clear placedOrderId here: the customer may want to return to
+            // the tracking view via the floating "Track order" button.
             setView('menu')
             window.location.hash = ''
           }}
@@ -205,12 +224,25 @@ export function CustomerApp({ token }: { token: string }) {
         restaurant={restaurant}
         onCheckout={(orderId) => {
           setPlacedOrderId(orderId)
+          setJustPlaced(true)
           sessionStorage.setItem(`order-${token}`, orderId)
           setCartOpen(false)
-          window.location.hash = 'track'
           toast.success('Order placed! Track its status below.')
         }}
       />
+
+      {/* When the customer has an existing order but is browsing the menu,
+          show a small "Track order" button so they can return to tracking. */}
+      {placedOrderId && view === 'menu' && (
+        <button
+          onClick={() => {
+            window.location.hash = 'track'
+          }}
+          className="fixed bottom-4 right-4 z-30 rounded-full bg-orange-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg transition-transform hover:scale-105 active:scale-95"
+        >
+          Track order →
+        </button>
+      )}
 
       <FloatingCartButton onClick={() => setCartOpen(true)} />
     </div>

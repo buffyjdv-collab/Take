@@ -9,16 +9,28 @@ export const createOrderItemSchema = z.object({
   notes: z.string().max(280).optional(),
 })
 
+// Validate a phone number: 7–15 digits, optional leading +, spaces/dashes ignored.
+const phoneRegex = /^\+?[\d\s\-()]{7,20}$/
+export const phoneSchema = z
+  .string()
+  .min(7, 'Phone number is required (min 7 digits)')
+  .max(20)
+  .regex(phoneRegex, 'Please enter a valid phone number')
+
 export const createOrderSchema = z.object({
   tableToken: z.string().min(1),
   items: z.array(createOrderItemSchema).min(1).max(50),
-  customerInfo: z
-    .object({
-      name: z.string().max(80).optional(),
-      phone: z.string().max(20).optional(),
-      email: z.string().email().optional().or(z.literal('')),
-    })
-    .optional(),
+  // Customer name & phone are now REQUIRED at order placement (replaces the
+  // old "order notes" prompt). The restaurant uses these to contact the
+  // customer about their order and to fulfil pre-payment requirements.
+  customerInfo: z.object({
+    name: z
+      .string()
+      .min(2, 'Please enter your name')
+      .max(80, 'Name is too long (max 80 characters)'),
+    phone: phoneSchema,
+    email: z.string().email().optional().or(z.literal('')),
+  }),
   idempotencyKey: z.string().min(8).max(120),
   notes: z.string().max(500).optional(),
 })
@@ -98,10 +110,29 @@ export const modifierGroupSchema = z.object({
 })
 
 // Admin: menu item
+// Image may be:
+//   - empty string
+//   - a public URL (https://…)
+//   - a data URL (data:image/...;base64,…) uploaded via the menu editor
+//   - a server-relative path (/uploads/…) returned by /api/admin/upload
+export const menuItemImageSchema = z
+  .string()
+  .max(2_000_000, 'Image payload too large (max 2MB for data URLs)')
+  .refine(
+    (v) =>
+      v === '' ||
+      /^https?:\/\//i.test(v) ||
+      /^data:image\/(png|jpe?g|webp|gif|svg\+xml);base64,/i.test(v) ||
+      /^\/uploads\//i.test(v),
+    'Image must be a URL, a data URL, or an /uploads/ path',
+  )
+  .optional()
+  .or(z.literal(''))
+
 export const menuItemSchema = z.object({
   name: z.string().min(1).max(120),
   description: z.string().max(600).optional(),
-  image: z.string().url().optional().or(z.literal('')),
+  image: menuItemImageSchema,
   categoryId: z.string().min(1),
   isVeg: z.boolean().optional(),
   isSpicy: z.boolean().optional(),
@@ -199,8 +230,21 @@ export const settingsSchema = z.object({
       allowRequestBill: z.boolean().optional(),
       maxItemsPerOrder: z.number().int().min(1).max(200).optional(),
       taxInclusive: z.boolean().optional(),
+      // Payment timing controls (super admin / owner toggle)
+      allowPrePayment: z.boolean().optional(),
+      allowPostPayment: z.boolean().optional(),
+      requirePrePayment: z.boolean().optional(),
+      requirePostPayment: z.boolean().optional(),
     })
     .optional(),
+})
+
+// Restaurant owner / cashier: request payment from customer at any point.
+// `when` controls the customer-facing prompt:
+//   - 'PRE':  "Please pay before we accept your order"
+//   - 'POST': "Please pay now that your order has been received"
+export const requestPaymentSchema = z.object({
+  when: z.enum(['PRE', 'POST']),
 })
 
 // ============================================================================

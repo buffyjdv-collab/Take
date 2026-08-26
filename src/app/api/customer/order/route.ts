@@ -193,12 +193,17 @@ export async function POST(req: NextRequest) {
 
   // Optional customer
   let customerId: string | null = null
-  if (input.customerInfo?.phone || input.customerInfo?.email) {
-    const existing = input.customerInfo.phone
+  // customerInfo is guaranteed by createOrderSchema (name + phone are required),
+  // but be defensive in case an older client submits without them.
+  const customerName = input.customerInfo?.name?.trim() || null
+  const customerPhone = input.customerInfo?.phone?.trim() || null
+  const customerEmail = input.customerInfo?.email?.trim() || null
+  if (customerPhone || customerEmail) {
+    const existing = customerPhone
       ? await db.customer.findFirst({
           where: {
             restaurantId: restaurant.id,
-            phone: input.customerInfo.phone,
+            phone: customerPhone,
           },
         })
       : null
@@ -207,22 +212,28 @@ export async function POST(req: NextRequest) {
       await db.customer.update({
         where: { id: existing.id },
         data: {
-          name: input.customerInfo.name || existing.name,
-          email: input.customerInfo.email || existing.email,
+          name: customerName || existing.name,
+          email: customerEmail || existing.email,
         },
       })
     } else {
       const c = await db.customer.create({
         data: {
           restaurantId: restaurant.id,
-          name: input.customerInfo.name,
-          phone: input.customerInfo.phone,
-          email: input.customerInfo.email || null,
+          name: customerName,
+          phone: customerPhone,
+          email: customerEmail || null,
         },
       })
       customerId = c.id
     }
   }
+
+  // Decide whether the restaurant should auto-request payment upfront.
+  // requirePrePayment (settings) → customer must pay BEFORE the order is accepted.
+  const settings = restaurant.settings
+  const shouldRequirePrePayment =
+    !!settings?.allowPrePayment && !!settings?.requirePrePayment
 
   // Create order + items + modifiers + update table — in a transaction
   const created = await db.$transaction(async (tx) => {
@@ -233,10 +244,18 @@ export async function POST(req: NextRequest) {
         branchId: table.branchId,
         tableId: table.id,
         customerId,
+        // Snapshot customer name & phone on the order so the restaurant always
+        // has them even if the Customer record is later deleted.
+        customerName,
+        customerPhone,
         status: 'NEW',
         paymentStatus: 'PENDING',
         notes: input.notes || null,
         idempotencyKey: input.idempotencyKey,
+        // If the restaurant has requirePrePayment enabled, flag the order so
+        // the customer UI prompts for payment immediately.
+        prePaymentRequested: shouldRequirePrePayment,
+        prePaymentRequestedAt: shouldRequirePrePayment ? new Date() : null,
         subtotal,
         taxAmount,
         serviceCharge,
@@ -309,16 +328,17 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    // Auto-accept if configured
-    if (restaurant.settings?.autoAcceptOrders) {
+    // Auto-accept if configured (but only after pre-payment is settled, if required)
+    if (restaurant.settings?.autoAcceptOrders && !shouldRequirePrePayment) {
       await tx.order.update({
         where: { id: order.id },
         data: { status: 'ACCEPTED', acceptedAt: new Date() },
       })
     }
 
-    // Notification row for kitchen
-    if (restaurant.settings?.notifyKitchenOnNewOrder !== false) {
+    // Notification row for kitchen (skip when pre-payment is required — kitchen
+    // shouldn't start cooking until the customer pays and the order is accepted)
+    if (!shouldRequirePrePayment && restaurant.settings?.notifyKitchenOnNewOrder !== false) {
       await tx.notification.create({
         data: {
           restaurantId: restaurant.id,
@@ -326,6 +346,22 @@ export async function POST(req: NextRequest) {
           type: 'NEW_ORDER',
           title: `New order ${order.orderNumber}`,
           message: `Table ${table.number} • ${lineItems.length} item(s) • ₹${grandTotal.toFixed(0)}`,
+          orderId: order.id,
+          tableId: table.id,
+        },
+      })
+    }
+
+    // If pre-payment is required, send a customer-facing notification so the
+    // customer's tracking UI knows to prompt for payment.
+    if (shouldRequirePrePayment) {
+      await tx.notification.create({
+        data: {
+          restaurantId: restaurant.id,
+          target: 'CUSTOMER',
+          type: 'PAYMENT_REQUIRED',
+          title: `Payment required for ${order.orderNumber}`,
+          message: `Please pay ₹${grandTotal.toFixed(0)} before we accept your order.`,
           orderId: order.id,
           tableId: table.id,
         },

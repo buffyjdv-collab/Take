@@ -48,12 +48,59 @@ model User {
   invitationsAccepted TenantInvitation[] @relation("InvitationsAccepted")
   onboardedRestaurants Restaurant[] @relation("OnboardedBy")
   platformFeeConfigUpdates PlatformFeeConfig[] @relation("PlatformFeeConfigUpdatedBy")
+  rbacPermissions RolePermission[]
+  rbacModuleAccess RoleModuleAccess[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([restaurantId])
   @@index([branchId])
+  @@index([role])
+}
+
+// ============================================================================
+// GRANULAR RBAC — managed by SUPER_ADMIN
+// ============================================================================
+// RolePermission: per-role CRUD action permissions on resources (molecular level)
+//   e.g. { role: MANAGER, resource: MENU_ITEM, action: CREATE, allowed: true }
+// If no row exists for a (role, resource, action) tuple, the system falls back
+// to the static PERMISSIONS map in src/lib/auth.ts. Once a row exists, it
+// overrides the static default (allow OR deny).
+model RolePermission {
+  id          String   @id @default(cuid())
+  role        String   // SUPER_ADMIN | RESTAURANT_OWNER | MANAGER | KITCHEN_STAFF | WAITER | CASHIER
+  resource    String   // e.g. MENU_ITEM, ORDER, TABLE, STAFF, REPORTS, SETTINGS, BILLING, PLATFORM, etc.
+  action      String   // CREATE | READ | UPDATE | DELETE (CRUD) or custom (VIEW, MANAGE, VERIFY, etc.)
+  allowed     Boolean  @default(true)
+  updatedBy   String?
+  updatedByUser User?  @relation(fields: [updatedBy], references: [id])
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([role, resource, action])
+  @@index([role])
+  @@index([resource])
+}
+
+// RoleModuleAccess: controls which sidebar modules each role can see.
+//   e.g. { role: MANAGER, moduleKey: 'menu', visible: true }
+// If no row exists for a (role, moduleKey) tuple, the system falls back to the
+// static PERMISSIONS-based check in src/components/sidebar.tsx. Once a row
+// exists, it overrides (visible OR hidden).
+model RoleModuleAccess {
+  id          String   @id @default(cuid())
+  role        String   // SUPER_ADMIN | RESTAURANT_OWNER | MANAGER | KITCHEN_STAFF | WAITER | CASHIER
+  moduleKey   String   // e.g. dashboard, orders, menu, modifiers, tables, kitchen, waiter, billing, reports, staff, settings
+  visible     Boolean  @default(true)
+  updatedBy   String?
+  updatedByUser User?  @relation(fields: [updatedBy], references: [id])
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([role, moduleKey])
   @@index([role])
 }
 
@@ -380,6 +427,19 @@ model Order {
   // Idempotency key to prevent duplicate order submission
   idempotencyKey String? @unique
 
+  // Customer snapshot (captured at order placement so the restaurant always
+  // has the name & phone even if the Customer record is later deleted)
+  customerName  String?
+  customerPhone String?
+
+  // Payment timing flags (set by restaurant owner)
+  // prePaymentRequested: restaurant asks customer to pay BEFORE the order is accepted
+  // postPaymentRequested: restaurant asks customer to pay AFTER the order is received (served)
+  prePaymentRequested  Boolean  @default(false)
+  postPaymentRequested Boolean  @default(false)
+  prePaymentRequestedAt  DateTime?
+  postPaymentRequestedAt DateTime?
+
   // Pricing (server-validated)
   subtotal      Float    @default(0)
   taxAmount     Float    @default(0)
@@ -622,6 +682,17 @@ model RestaurantSettings {
   maxItemsPerOrder          Int     @default(50)
   // Tax inclusive pricing
   taxInclusive              Boolean @default(false)
+
+  // Payment collection timing controls (managed by restaurant owner)
+  // allowPrePayment:  owner can require payment BEFORE accepting the order
+  // allowPostPayment: owner can require payment AFTER the order is received (served)
+  allowPrePayment           Boolean @default(true)
+  allowPostPayment          Boolean @default(true)
+  // Default behaviour for new orders:
+  // requirePrePayment:  automatically request pre-payment when a new order arrives
+  // requirePostPayment: automatically request post-payment when an order is served
+  requirePrePayment         Boolean @default(false)
+  requirePostPayment        Boolean @default(false)
 
   restaurant    Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
 

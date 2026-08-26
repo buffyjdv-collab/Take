@@ -1,6 +1,7 @@
 'use client'
 
-import { useCustomerOrder, useCancelOrder } from '@/hooks/api'
+import { useState } from 'react'
+import { useCustomerOrder, useCancelOrder, useInitiatePayment, useVerifyPayment } from '@/hooks/api'
 import { useSocketEvent } from '@/hooks/use-socket'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
@@ -9,11 +10,12 @@ import { OrderStatusBadge } from '@/components/restaurant/order-status-badge'
 import { PaymentStatusBadge } from '@/components/restaurant/payment-status-badge'
 import { LoadingSpinner, EmptyState } from '@/components/restaurant/loading-states'
 import { Price, formatINR } from '@/components/restaurant/price'
-import { BellRing, CheckCircle2, Clock, ChefHat, PackageCheck, Utensils, XCircle } from 'lucide-react'
+import { BellRing, CheckCircle2, Clock, ChefHat, PackageCheck, Utensils, XCircle, CreditCard, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { motion } from 'framer-motion'
 import { cn } from '@/lib/utils'
 import type { OrderStatus } from '@/lib/types'
+import type { RestaurantInfo } from './types'
 
 const STEPS: { key: OrderStatus; label: string; icon: any }[] = [
   { key: 'NEW', label: 'Placed', icon: CheckCircle2 },
@@ -32,16 +34,21 @@ function stepIndex(status: string): number {
 
 export function OrderTracking({
   orderId,
+  restaurant,
   onBackToMenu,
   onProceedToBill,
 }: {
   orderId: string
+  restaurant?: RestaurantInfo
   onBackToMenu: () => void
   onProceedToBill: () => void
 }) {
   const qc = useQueryClient()
   const { data: order, isLoading } = useCustomerOrder(orderId)
   const cancel = useCancelOrder()
+  const initiate = useInitiatePayment()
+  const verify = useVerifyPayment()
+  const [paying, setPaying] = useState(false)
 
   // Real-time updates
   useSocketEvent('order:updated', (payload: any) => {
@@ -61,6 +68,15 @@ export function OrderTracking({
       toast.success('Payment confirmed!')
     }
   })
+  useSocketEvent('payment:requested', (payload: any) => {
+    if (payload?.orderId === orderId) {
+      qc.invalidateQueries({ queryKey: ['customer-order', orderId] })
+      const when = payload.when === 'PRE' ? 'before we accept your order' : 'now that your order is received'
+      toast.info(`Payment requested: please pay ${when}.`, {
+        description: `Amount: ₹${(payload.amount || 0).toFixed(0)}`,
+      })
+    }
+  })
 
   if (isLoading || !order) {
     return (
@@ -75,6 +91,33 @@ export function OrderTracking({
   const canRequestBill = ['SERVED', 'READY'].includes(order.status) && order.paymentStatus !== 'PAID'
   const isPaid = order.paymentStatus === 'PAID'
   const isCompleted = order.status === 'COMPLETED'
+
+  // If the restaurant has asked the customer to pay (pre or post), show a
+  // prominent payment panel so the customer can settle the bill immediately.
+  const needsToPay =
+    !isPaid &&
+    (order.prePaymentRequested || order.postPaymentRequested)
+  const acceptUpi = restaurant?.acceptUpi ?? true
+  const acceptCard = restaurant?.acceptCard ?? true
+  const acceptCounter = restaurant?.acceptCounter ?? true
+
+  const handlePay = async (method: 'UPI' | 'CARD' | 'WALLET') => {
+    setPaying(true)
+    try {
+      const init = await initiate.mutateAsync({ orderId, method })
+      toast.info('Connecting to payment gateway…')
+      await new Promise((r) => setTimeout(r, init.verifyInMs || 1500))
+      await verify.mutateAsync({
+        paymentId: init.paymentId,
+        providerTxnId: init.providerTxnId,
+      })
+      toast.success('Payment successful!')
+    } catch (err: any) {
+      toast.error(err.message || 'Payment failed')
+    } finally {
+      setPaying(false)
+    }
+  }
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-6">
@@ -218,6 +261,77 @@ export function OrderTracking({
           </div>
         </CardContent>
       </Card>
+
+      {/* Payment-requested panel — shown when the restaurant asks the customer
+          to pay before accepting (PRE) or after receiving (POST) the order */}
+      {needsToPay && (
+        <motion.div
+          initial={{ y: 8, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+        >
+          <Card className="mb-4 border-amber-200 bg-amber-50">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-base text-amber-900">
+                <CreditCard className="h-4 w-4" />
+                {order.prePaymentRequested
+                  ? 'Please pay before we accept your order'
+                  : 'Please pay to complete your order'}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-amber-800">
+                {order.prePaymentRequested
+                  ? 'The restaurant has requested payment upfront. Your order will be accepted once payment is confirmed.'
+                  : 'Your order has been received. Please settle the bill before leaving the table.'}
+              </p>
+              <div className="flex items-center justify-between rounded-lg bg-white p-3 text-sm shadow-sm">
+                <span className="font-medium text-slate-700">Amount due</span>
+                <span className="text-lg font-bold text-amber-900">
+                  {formatINR(order.grandTotal)}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                {acceptUpi && (
+                  <Button
+                    variant="outline"
+                    className="bg-white"
+                    disabled={paying}
+                    onClick={() => handlePay('UPI')}
+                  >
+                    Pay with UPI
+                  </Button>
+                )}
+                {acceptCard && (
+                  <Button
+                    variant="outline"
+                    className="bg-white"
+                    disabled={paying}
+                    onClick={() => handlePay('CARD')}
+                  >
+                    Pay with Card
+                  </Button>
+                )}
+                {acceptCounter && (
+                  <Button
+                    variant="outline"
+                    className="bg-white"
+                    disabled={paying}
+                    onClick={() => handlePay('WALLET')}
+                  >
+                    Pay at counter
+                  </Button>
+                )}
+              </div>
+              {paying && (
+                <div className="flex items-center justify-center gap-2 text-sm text-amber-800">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Processing payment…
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+      )}
 
       {/* Actions */}
       <div className="flex flex-col gap-2">

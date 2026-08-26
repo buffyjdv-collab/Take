@@ -173,3 +173,41 @@ Stage Summary:
 - Default fee config: 0.5% of total excluding tax, restaurant pays, min ₹0, no max
 - All fee amounts stored as snapshots on order (audit trail) — even if config changes later, historical orders retain their original fee calculation
 - Lint: 0 errors, 0 warnings
+
+---
+Task ID: RBAC-FEATURES
+Agent: Main (Super Z)
+Task: Implement granular RBAC for super admin, module control, customer name/phone collection, pre/post payment, menu image upload, fix QR scan menu-open bug
+
+Work Log:
+- Read full codebase: prisma/schema.prisma, src/lib/auth.ts, src/lib/validations.ts, src/lib/api-helpers.ts, src/components/sidebar.tsx, src/components/customer/{cart-drawer,customer-app,order-tracking,bill-view,menu-list,restaurant-header}.tsx, src/components/admin/{menu-manager,orders-manager}.tsx, src/components/app-shell.tsx, src/app/page.tsx, all customer/admin/platform API routes
+- Updated prisma/schema.prisma: added RolePermission (granular CRUD matrix) and RoleModuleAccess (sidebar visibility) models with back-relations to User; added customerName/customerPhone/prePaymentRequested/postPaymentRequested fields on Order; added allowPrePayment/allowPostPayment/requirePrePayment/requirePostPayment flags on RestaurantSettings
+- Generated Prisma client (v6.19.3) and pushed schema to Neon PostgreSQL database
+- Updated src/lib/auth.ts: added RBAC_RESOURCES catalog (17 resources × CRUD actions), DEFAULT_PERMISSIONS map (preserves original PERMISSIONS semantics), LEGACY_PERMISSION_ALIAS (so old 'menu.create' style keys keep working), hasPermissionAsync() that consults DB overrides with 30s cache, SIDEBAR_MODULES catalog (18 modules), DEFAULT_MODULE_VISIBILITY map, hasModuleAccess()/hasModuleAccessAsync()/getVisibleModulesForRole() helpers, invalidateRbacCache()/invalidateModuleCache() functions
+- Updated src/lib/api-helpers.ts: requirePermission() now uses hasPermissionAsync() for accurate DB-backed decisions
+- Updated src/lib/validations.ts: createOrderSchema.customerInfo now requires name (min 2 chars) and phone (regex-validated 7-15 digits); menuItemImageSchema accepts URL, data URL, or /uploads/ path; settingsSchema includes the 4 new payment timing flags; added requestPaymentSchema
+- Updated src/app/api/customer/order/route.ts: persists customerName/customerPhone snapshot on Order; honours restaurant.settings.requirePrePayment by setting prePaymentRequested=true at order creation, skipping auto-accept and kitchen notification, and creating a CUSTOMER PAYMENT_REQUIRED notification
+- Updated src/components/customer/cart-drawer.tsx: replaced "Order notes (optional)" textarea with required Name + Phone inputs (with client-side validation and server-side zod re-validation)
+- Created src/app/api/admin/upload/route.ts: accepts multipart/form-data OR JSON data URL, validates MIME type (png/jpeg/webp/gif/svg) and 2MB size limit, saves to /public/uploads/<timestamp>-<random>.<ext>, returns /uploads/<filename> URL
+- Updated src/components/admin/menu-manager.tsx: replaced plain "Image URL" Input with a new ImageUploader component supporting drag/drop, click-to-browse, file upload to /api/admin/upload, image preview, manual URL fallback, and remove button
+- Updated src/app/api/admin/settings/route.ts: handles allowPrePayment/allowPostPayment/requirePrePayment/requirePostPayment flags in PATCH
+- Created src/app/api/admin/orders/[id]/request-payment/route.ts: lets restaurant owner/cashier send PRE (before accept) or POST (after served) payment requests; validates status transitions, restaurant settings allow flags, creates CUSTOMER notification, emits payment:requested realtime event
+- Updated src/components/admin/orders-manager.tsx: added "Collect payment before accepting" button (PRE, amber) on NEW orders, "Collect payment after order received" button (POST, emerald) on SERVED/READY orders; shows customer name+phone (with tel: link) in order detail sheet; shows amber banners when pre/post payment has been requested
+- Updated src/components/customer/order-tracking.tsx: added new "Payment requested" panel that appears when restaurant requests PRE or POST payment — shows amount due and UPI/Card/Counter payment buttons; listens for payment:requested realtime event
+- Updated src/components/customer/customer-app.tsx: FIXED QR scan menu-open bug — replaced the broken "force hash to track whenever placedOrderId is set" effect (which locked customers into track view when revisiting a table) with a one-shot justPlaced flag that only auto-navigates immediately after order placement; added a floating "Track order →" button so customers can return to tracking from the menu; passed restaurant to OrderTracking so it can render the payment panel
+- Created src/app/api/platform/rbac/permissions/route.ts: GET returns full permission matrix (17 resources × CRUD actions × 5 non-super-admin roles); PUT accepts batch updates, validates against catalog, upserts/deletes overrides based on whether value matches static default
+- Created src/app/api/platform/rbac/modules/route.ts: GET returns module visibility matrix (18 modules × 5 roles); PUT accepts batch updates for module visibility
+- Created src/app/api/platform/rbac/me/route.ts: returns the list of module keys visible to the current user (used by the sidebar client component)
+- Created src/components/platform/platform-rbac-manager.tsx: two-tab super-admin UI — "Permissions (CRUD)" tab shows a 17×5 resource×role matrix with ✓/✕ toggles for each CRUD action, with dirty-state tracking and batch save; "Module visibility" tab shows platform + restaurant modules as switches per role, also with dirty state and batch save
+- Updated src/components/sidebar.tsx: removed the stray "yogesh" duplicate nav item; added "RBAC & Modules" platform nav item with Shield icon; sidebar now fetches /api/platform/rbac/me on mount and uses the DB-backed module list (with static hasModuleAccess fallback for SSR/first paint)
+- Updated src/components/app-shell.tsx: registered the platform-rbac hash view → <PlatformRbacManager />
+- Ran TypeScript check: 0 errors in any new/modified file (16 pre-existing errors in untouched files remain)
+
+Stage Summary:
+- Database: 2 new models (RolePermission, RoleModuleAccess) + new fields on Order (customerName, customerPhone, prePaymentRequested, postPaymentRequested, prePaymentRequestedAt, postPaymentRequestedAt) + 4 new flags on RestaurantSettings (allowPrePayment, allowPostPayment, requirePrePayment, requirePostPayment) — all pushed to Neon PostgreSQL
+- RBAC: granular CRUD matrix (17 resources × CRUD actions) manageable by super admin via UI; DB-backed with 30s in-process cache; static fallback preserves backward compatibility
+- Module control: 18 sidebar modules per-role visibility manageable by super admin; sidebar fetches DB-backed visibility on mount
+- Customer flow: order placement now requires name + phone (replaces order notes); customer-app QR scan bug fixed — fresh QR scans always land on the menu
+- Payment timing: restaurant owner can request pre-payment (before accept) or post-payment (after served) via dedicated buttons; customer tracking UI shows prominent payment panel with UPI/Card/Counter options; settings include requirePrePayment/requirePostPayment auto-flags
+- Menu image upload: new /api/admin/upload endpoint + drag/drop ImageUploader component in menu editor with preview and 2MB validation
+- All changes TypeScript-clean; Prisma client regenerated; database schema synced

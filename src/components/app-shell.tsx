@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useSession, type Session } from 'next-auth/react'
+import { useSession } from 'next-auth/react'
 import { Sidebar } from './sidebar'
 import { Dashboard } from './admin/dashboard'
 import { OrdersManager } from './admin/orders-manager'
@@ -20,6 +20,7 @@ import { PlatformRestaurantsManager } from './platform/platform-restaurants-mana
 import { PlatformUsersManager } from './platform/platform-users-manager'
 import { PlatformFeeConfig } from './platform/platform-fee-config'
 import { PlatformFeesCollected } from './platform/platform-fees-collected'
+import { PlatformRbacManager } from './platform/platform-rbac-manager'
 import { Menu as MenuIcon, BellRing } from 'lucide-react'
 import { useSocketEvent } from '@/hooks/use-socket'
 import { useQueryClient } from '@tanstack/react-query'
@@ -27,7 +28,7 @@ import { toast } from 'sonner'
 import { Loader2 } from 'lucide-react'
 
 interface AppShellProps {
-  serverSession?: Session | null
+  serverSession?: any
 }
 
 export function AppShell({ serverSession }: AppShellProps) {
@@ -179,6 +180,7 @@ export function AppShell({ serverSession }: AppShellProps) {
           {hash === 'platform-fees' && <PlatformFeesCollected />}
           {hash === 'platform-fee-config' && <PlatformFeeConfig />}
           {hash === 'platform-plans' && <PlatformRestaurantsManager />}
+          {hash === 'platform-rbac' && <PlatformRbacManager />}
           {hash === 'dashboard' && <Dashboard />}
           {hash === 'orders' && <OrdersManager />}
           {hash === 'menu' && <MenuManager />}

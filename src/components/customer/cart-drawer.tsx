@@ -23,7 +23,8 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { Textarea } from '@/components/ui/textarea'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { usePlaceOrder } from '@/hooks/api'
 import { toast } from 'sonner'
 import type { RestaurantInfo } from './types'
@@ -44,12 +45,29 @@ export function CartDrawer({ open, onOpenChange, restaurant, onCheckout }: Props
   const totals = useCustomerCart((s) => s.totals)
 
   const [confirmOpen, setConfirmOpen] = useState(false)
-  const [orderNotes, setOrderNotes] = useState('')
+  // Collect customer name & phone instead of an "order notes" textarea.
+  // The restaurant uses these to identify the customer and contact them if
+  // there's an issue with their order.
+  const [customerName, setCustomerName] = useState('')
+  const [customerPhone, setCustomerPhone] = useState('')
+  const [touched, setTouched] = useState(false)
   const placeOrder = usePlaceOrder()
 
   const t = totals(restaurant.taxRate, restaurant.serviceChargeRate)
 
+  // Basic client-side validation (the server re-validates with zod).
+  const nameValid = customerName.trim().length >= 2
+  // 7–15 digits, optional leading +, spaces/dashes ignored
+  const digits = customerPhone.replace(/[^\d]/g, '')
+  const phoneValid = digits.length >= 7 && digits.length <= 15
+  const formValid = nameValid && phoneValid
+
   const handlePlace = async () => {
+    setTouched(true)
+    if (!formValid) {
+      toast.error('Please enter your name and phone number to place the order.')
+      return
+    }
     try {
       // Generate idempotency key
       const idempotencyKey =
@@ -68,13 +86,20 @@ export function CartDrawer({ open, onOpenChange, restaurant, onCheckout }: Props
           notes: i.notes,
         })),
         idempotencyKey,
-        notes: orderNotes.trim() || undefined,
+        // Required by the server now — name & phone are persisted on the order
+        // so the restaurant can reach the customer about pre-payment or status.
+        customerInfo: {
+          name: customerName.trim(),
+          phone: customerPhone.trim(),
+        },
       }
       const order = await placeOrder.mutateAsync(body)
-      // Clear idempotency key + cart
+      // Clear idempotency key + cart + customer fields
       sessionStorage.removeItem('last-idem-key')
       clear()
-      setOrderNotes('')
+      setCustomerName('')
+      setCustomerPhone('')
+      setTouched(false)
       setConfirmOpen(false)
       onOpenChange(false)
       onCheckout(order.id)
@@ -238,22 +263,54 @@ export function CartDrawer({ open, onOpenChange, restaurant, onCheckout }: Props
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Confirm your order</DialogTitle>
+            <DialogTitle>Your details</DialogTitle>
             <DialogDescription>
               You're about to place an order for {t.itemCount} item(s) totalling{' '}
               <strong>₹{t.grandTotal.toFixed(0)}</strong> on Table{' '}
               {new URLSearchParams(window.location.search).get('table')}.
+              Please share your name & phone so the restaurant can confirm your
+              order and contact you if needed.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Order notes (optional)</label>
-            <Textarea
-              placeholder="e.g. allergens, table-side instructions"
-              value={orderNotes}
-              onChange={(e) => setOrderNotes(e.target.value)}
-              rows={3}
-              maxLength={500}
-            />
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="customer-name">Your name *</Label>
+              <Input
+                id="customer-name"
+                placeholder="e.g. Arjun Patel"
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+                maxLength={80}
+                autoFocus
+                aria-invalid={touched && !nameValid}
+              />
+              {touched && !nameValid && (
+                <p className="text-xs text-red-600">
+                  Please enter your name (min 2 characters).
+                </p>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="customer-phone">Phone number *</Label>
+              <Input
+                id="customer-phone"
+                inputMode="tel"
+                placeholder="e.g. +91 98765 43210"
+                value={customerPhone}
+                onChange={(e) => setCustomerPhone(e.target.value)}
+                maxLength={20}
+                aria-invalid={touched && !phoneValid}
+              />
+              {touched && !phoneValid ? (
+                <p className="text-xs text-red-600">
+                  Please enter a valid phone number (7–15 digits).
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  We&apos;ll only use this to contact you about your order.
+                </p>
+              )}
+            </div>
           </div>
           <DialogFooter>
             <Button
@@ -265,10 +322,10 @@ export function CartDrawer({ open, onOpenChange, restaurant, onCheckout }: Props
             </Button>
             <Button
               onClick={handlePlace}
-              disabled={placeOrder.isPending}
+              disabled={placeOrder.isPending || !formValid}
               className="bg-orange-600 text-white hover:bg-orange-700"
             >
-              {placeOrder.isPending ? 'Placing…' : 'Confirm & place order'}
+              {placeOrder.isPending ? 'Placing…' : `Confirm · ₹${t.grandTotal.toFixed(0)}`}
             </Button>
           </DialogFooter>
         </DialogContent>

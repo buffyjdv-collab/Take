@@ -183,6 +183,24 @@ export function useUpdateOrderStatus() {
   })
 }
 
+// Restaurant owner / cashier requests customer payment before accepting (PRE)
+// or after the order is served (POST).
+export function useRequestPayment() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, when }: { id: string; when: 'PRE' | 'POST' }) =>
+      api<any>(`/api/admin/orders/${id}/request-payment`, {
+        method: 'POST',
+        body: JSON.stringify({ when }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin-orders'] })
+      qc.invalidateQueries({ queryKey: ['admin-order'] })
+      qc.invalidateQueries({ queryKey: ['admin-dashboard'] })
+    },
+  })
+}
+
 export function useAdminCategories() {
   return useQuery({
     queryKey: ['admin-categories'],

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -29,7 +29,7 @@ import { EmptyState, LoadingSpinner, ButtonWithLoading } from '@/components/rest
 import { ConfirmDialog } from '@/components/restaurant/confirm-dialog'
 import { useAdminCategories, useAdminMenuItems, useAdminModifierGroups, api } from '@/hooks/api'
 import { useQueryClient } from '@tanstack/react-query'
-import { Plus, Pencil, Trash2, Star, Flame, X, UtensilsCrossed } from 'lucide-react'
+import { Plus, Pencil, Trash2, Star, Flame, X, UtensilsCrossed, Upload, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
@@ -419,11 +419,10 @@ function ItemEditor({
               />
             </div>
             <div className="col-span-2">
-              <Label>Image URL</Label>
-              <Input
+              <Label>Item image</Label>
+              <ImageUploader
                 value={item.image || ''}
-                onChange={(e) => set({ image: e.target.value })}
-                placeholder="https://…"
+                onChange={(url) => set({ image: url })}
               />
             </div>
             <div>
@@ -706,5 +705,147 @@ function CategoryEditor({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ImageUploader — supports drag/drop or click-to-browse file selection.
+// Uploads the file to /api/admin/upload and stores the returned URL.
+// Also accepts a manually-typed URL (e.g. external CDN) via the text input.
+// ---------------------------------------------------------------------------
+
+const ACCEPTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml']
+const MAX_FILE_SIZE = 2 * 1024 * 1024 // 2 MB
+
+function ImageUploader({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (url: string) => void
+}) {
+  const [uploading, setUploading] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const uploadFile = async (file: File) => {
+    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+      toast.error(`Unsupported file type: ${file.type}. Use PNG, JPEG, WebP, GIF, or SVG.`)
+      return
+    }
+    if (file.size > MAX_FILE_SIZE) {
+      toast.error(`File too large (max ${MAX_FILE_SIZE / 1024 / 1024}MB).`)
+      return
+    }
+    setUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await fetch('/api/admin/upload', {
+        method: 'POST',
+        body: formData,
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json?.data?.url) {
+        throw new Error(json?.error || `Upload failed (${res.status})`)
+      }
+      onChange(json.data.url)
+      toast.success('Image uploaded')
+    } catch (err: any) {
+      toast.error(err.message || 'Upload failed')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) uploadFile(file)
+    // Reset so the same file can be picked again later
+    e.target.value = ''
+  }
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file) uploadFile(file)
+  }
+
+  return (
+    <div className="space-y-2">
+      {/* Preview / dropzone */}
+      <div className="flex gap-3">
+        <div
+          onDragOver={(e) => {
+            e.preventDefault()
+            setDragOver(true)
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+          onClick={() => inputRef.current?.click()}
+          className={cn(
+            'relative flex h-24 w-24 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-lg border-2 border-dashed text-center transition-colors',
+            dragOver
+              ? 'border-orange-500 bg-orange-50'
+              : value
+              ? 'border-slate-200'
+              : 'border-slate-300 hover:border-orange-400 hover:bg-orange-50/40',
+          )}
+        >
+          {value ? (
+            <img
+              src={value}
+              alt="Menu item preview"
+              className="h-full w-full object-cover"
+            />
+          ) : uploading ? (
+            <Loader2 className="h-5 w-5 animate-spin text-orange-600" />
+          ) : (
+            <div className="flex flex-col items-center gap-1 p-2 text-xs text-muted-foreground">
+              <Upload className="h-4 w-4" />
+              <span>Click or drop</span>
+            </div>
+          )}
+          <input
+            ref={inputRef}
+            type="file"
+            accept={ACCEPTED_IMAGE_TYPES.join(',')}
+            onChange={handleFileInput}
+            className="hidden"
+          />
+        </div>
+
+        <div className="flex-1 space-y-1.5">
+          <Input
+            placeholder="Or paste image URL: https://…"
+            value={value && /^https?:\/\//i.test(value) ? value : ''}
+            onChange={(e) => onChange(e.target.value)}
+          />
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>PNG · JPEG · WebP · GIF · SVG</span>
+            <span>•</span>
+            <span>max 2 MB</span>
+            {value && (
+              <>
+                <span>•</span>
+                <button
+                  type="button"
+                  className="text-red-600 hover:underline"
+                  onClick={() => onChange('')}
+                >
+                  Remove
+                </button>
+              </>
+            )}
+          </div>
+          {value && /^\/uploads\//i.test(value) && (
+            <p className="text-xs text-emerald-700">
+              ✓ Uploaded to {value}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
   )
 }

@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import { cn } from '@/lib/utils'
 import {
   LayoutDashboard,
@@ -17,11 +18,13 @@ import {
   Building2,
   Globe2,
   CreditCard,
+  Shield,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { signOut } from 'next-auth/react'
-import { hasPermission, ROLE_LABELS } from '@/lib/auth'
+import { hasModuleAccess, ROLE_LABELS } from '@/lib/auth'
 import type { Role } from '@/lib/types'
+import { api } from '@/hooks/api'
 
 interface NavItem {
   key: string
@@ -41,6 +44,7 @@ const NAV: NavItem[] = [
   { key: 'platform-fees', label: 'Platform Fees', icon: CreditCard, group: 'platform', permission: 'restaurants.manage' },
   { key: 'platform-fee-config', label: 'Fee Configuration', icon: CreditCard, group: 'platform', permission: 'restaurants.manage' },
   { key: 'platform-plans', label: 'Plans & Billing', icon: CreditCard, group: 'platform', permission: 'restaurants.manage' },
+  { key: 'platform-rbac', label: 'RBAC & Modules', icon: Shield, group: 'platform', permission: 'restaurants.manage' },
 
   // Restaurant-level
   { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, permission: 'dashboard.view', group: 'restaurant' },
@@ -53,7 +57,6 @@ const NAV: NavItem[] = [
   { key: 'billing', label: 'Billing', icon: Receipt, permission: 'billing.manage', group: 'restaurant' },
   { key: 'reports', label: 'Reports', icon: BarChart3, permission: 'reports.view', group: 'restaurant' },
   { key: 'staff', label: 'Staff', icon: Users, permission: 'staff.manage', group: 'restaurant' },
-  { key: 'staff', label: 'yogesh', icon: Users, permission: 'staff.manage', group: 'restaurant' },
   { key: 'settings', label: 'Settings', icon: Settings, permission: 'settings.manage', group: 'restaurant' },
 ]
 
@@ -70,8 +73,36 @@ export function Sidebar({
   userName?: string | null
   onNavigate?: (key: string) => void
 }) {
+  // The server-side render uses the static fallback (hasModuleAccess) for the
+  // first paint. On mount, we fetch the DB-backed module list so any changes
+  // made by the super admin in the RBAC manager take effect for the current
+  // user immediately (within 30s, the cache TTL on the server).
+  const [visibleKeys, setVisibleKeys] = useState<Set<string> | null>(null)
+
+  useEffect(() => {
+    if (!role || role === 'SUPER_ADMIN') return // super admin sees everything
+    let cancelled = false
+    api<{ modules: string[] }>('/api/platform/rbac/me')
+      .then((res) => {
+        if (!cancelled) setVisibleKeys(new Set(res.modules))
+      })
+      .catch(() => {
+        // Ignore — fall back to static hasModuleAccess
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [role])
+
   const visible = role
-    ? NAV.filter((n) => !n.permission || hasPermission(role, n.permission))
+    ? NAV.filter((n) => {
+        // SUPER_ADMIN sees everything
+        if (role === 'SUPER_ADMIN') return true
+        // DB-backed visibility (once loaded)
+        if (visibleKeys) return visibleKeys.has(n.key)
+        // Static fallback before the fetch resolves
+        return hasModuleAccess(role, n.key)
+      })
     : []
   const platformItems = visible.filter((n) => n.group === 'platform')
   const restaurantItems = visible.filter((n) => n.group === 'restaurant')

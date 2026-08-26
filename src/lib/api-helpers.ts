@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth'
-import { hasPermission } from '@/lib/auth'
+import { authOptions, hasPermissionAsync } from '@/lib/auth'
 import type { Role } from '@/lib/types'
 
 export interface SessionUser {
@@ -69,7 +68,8 @@ export function scopeRestaurantId(
 export async function requirePermission(permission: string) {
   const user = await getSessionUser()
   if (!user) return { user: null, error: unauthorized() }
-  if (!hasPermission(user.role as string, permission)) {
+  const allowed = await hasPermissionAsync(user.role as string, permission)
+  if (!allowed) {
     return { user: null, error: forbidden() }
   }
   return { user, error: null }
