@@ -31,5 +31,7 @@ export default async function Home({ searchParams }: HomePageProps) {
     return <LandingPage />
   }
 
-  return <AppShell />
+  // Pass the server-side session to AppShell so the sidebar has role/permissions
+  // immediately without waiting for a client-side useSession() fetch.
+  return <AppShell serverSession={session} />
 }

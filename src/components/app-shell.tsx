@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useSession } from 'next-auth/react'
+import { useSession, type Session } from 'next-auth/react'
 import { Sidebar } from './sidebar'
 import { Dashboard } from './admin/dashboard'
 import { OrdersManager } from './admin/orders-manager'
@@ -24,9 +24,19 @@ import { Menu as MenuIcon, BellRing } from 'lucide-react'
 import { useSocketEvent } from '@/hooks/use-socket'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { Loader2 } from 'lucide-react'
 
-export function AppShell() {
-  const { data: session } = useSession()
+interface AppShellProps {
+  serverSession?: Session | null
+}
+
+export function AppShell({ serverSession }: AppShellProps) {
+  const { data: clientSession, status } = useSession()
+
+  // Use server session immediately, fall back to client session once loaded
+  const session = clientSession ?? serverSession
+  const isLoading = status === 'loading' && !serverSession
+
   const [hash, setHash] = useState<string>('dashboard')
   const qc = useQueryClient()
 
@@ -94,10 +104,18 @@ export function AppShell() {
 
   const role = (session?.user as any)?.role as string
   const restaurantName = (session?.user as any)?.restaurantName as string | undefined
-  const userName = (session?.user as any)?.name as string | undefined
+  const userName = session?.user?.name
 
   // For mobile, sidebar is hidden behind a toggle
   const [mobileOpen, setMobileOpen] = useState(false)
+
+  if (isLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-slate-50">
+        <Loader2 className="h-6 w-6 animate-spin text-orange-600" />
+      </div>
+    )
+  }
 
   return (
     <div className="flex h-screen bg-slate-50">

@@ -1,5 +1,40 @@
 // Type definitions shared between client and server
 
+// NextAuth type augmentation
+declare module 'next-auth' {
+  interface Session {
+    user: {
+      id: string
+      name: string
+      email: string
+      role: string
+      restaurantId?: string
+      branchId?: string
+      restaurantName?: string
+      restaurantSlug?: string
+    }
+  }
+
+  interface User {
+    role?: string
+    restaurantId?: string
+    branchId?: string
+    restaurantName?: string
+    restaurantSlug?: string
+  }
+}
+
+declare module 'next-auth/jwt' {
+  interface JWT {
+    id?: string
+    role?: string
+    restaurantId?: string
+    branchId?: string
+    restaurantName?: string
+    restaurantSlug?: string
+  }
+}
+
 export type Role =
   | 'SUPER_ADMIN'
   | 'RESTAURANT_OWNER'

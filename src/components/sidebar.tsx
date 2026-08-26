@@ -20,7 +20,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { signOut } from 'next-auth/react'
-import { hasPermission } from '@/lib/auth'
+import { hasPermission, ROLE_LABELS } from '@/lib/auth'
 import type { Role } from '@/lib/types'
 
 interface NavItem {
@@ -69,9 +69,9 @@ export function Sidebar({
   userName?: string | null
   onNavigate?: (key: string) => void
 }) {
-  const visible = NAV.filter(
-    (n) => !n.permission || hasPermission(role, n.permission),
-  )
+  const visible = role
+    ? NAV.filter((n) => !n.permission || hasPermission(role, n.permission))
+    : []
   const platformItems = visible.filter((n) => n.group === 'platform')
   const restaurantItems = visible.filter((n) => n.group === 'restaurant')
   const isPlatformView = activeKey.startsWith('platform-')
@@ -123,7 +123,7 @@ export function Sidebar({
         <div className="mb-2 rounded-lg bg-slate-50 px-3 py-2">
           <p className="text-xs font-semibold text-slate-900">{userName || 'Signed in'}</p>
           <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
-            {(role || 'staff').replace('_', ' ')}
+            {role ? (ROLE_LABELS[role] || role.replace(/_/g, ' ')) : 'Loading…'}
           </p>
         </div>
         <Button
