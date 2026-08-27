@@ -68,6 +68,7 @@ export interface RestaurantInfo {
   acceptCard: boolean
   acceptCash: boolean
   acceptCounter: boolean
+  upiId?: string | null
   settings?: any
 }
 

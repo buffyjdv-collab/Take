@@ -7,8 +7,11 @@ export const dynamic = 'force-dynamic'
 
 /**
  * Product Report — shows what is actually selling.
- * Columns: Item | Qty | Gross Sales | Discount | Net Sales
+ * Columns: Item | Qty | Gross Sales | Discount | Net Sales | Platform Fee
  * Includes Top Selling (by qty) and Top Revenue (by revenue) rankings.
+ *
+ * Platform fee is pro-rated per item based on the item's revenue share of its
+ * order's subtotal: (item.totalPrice / order.subtotal) * order.platformFeeAmount
  */
 export async function GET(req: NextRequest) {
   const { user, error } = await requirePermission('reports.view')
@@ -41,6 +44,7 @@ export async function GET(req: NextRequest) {
       basePrice: true,
       variantPrice: true,
       modifiersTotal: true,
+      order: { select: { platformFeeAmount: true, subtotal: true } },
       menuItem: {
         select: {
           isVeg: true,
@@ -66,10 +70,16 @@ export async function GET(req: NextRequest) {
       grossSales: number
       discount: number  // per-item discount (pro-rated if order had discount)
       netSales: number
+      platformFee: number  // pro-rated platform fee for this item
     }
   >()
 
   for (const it of itemRows) {
+    // Pro-rate the order's platform fee across items based on revenue share
+    const itemFee =
+      it.order.subtotal > 0
+        ? (it.totalPrice / it.order.subtotal) * it.order.platformFeeAmount
+        : 0
     const cur = itemAgg.get(it.menuItemId) || {
       menuItemId: it.menuItemId,
       name: it.menuItemName,
@@ -81,10 +91,12 @@ export async function GET(req: NextRequest) {
       grossSales: 0,
       discount: 0,
       netSales: 0,
+      platformFee: 0,
     }
     cur.quantity += it.quantity
     cur.grossSales += it.totalPrice
     cur.netSales += it.totalPrice // no per-item discount tracking yet; net = gross for items
+    cur.platformFee += itemFee
     itemAgg.set(it.menuItemId, cur)
   }
 
@@ -93,6 +105,7 @@ export async function GET(req: NextRequest) {
     grossSales: +v.grossSales.toFixed(2),
     discount: +v.discount.toFixed(2),
     netSales: +v.netSales.toFixed(2),
+    platformFee: +v.platformFee.toFixed(2),
   }))
 
   // Top Selling (by quantity)
@@ -108,6 +121,7 @@ export async function GET(req: NextRequest) {
     totalGrossSales: +all.reduce((s, i) => s + i.grossSales, 0).toFixed(2),
     totalDiscount: +all.reduce((s, i) => s + i.discount, 0).toFixed(2),
     totalNetSales: +all.reduce((s, i) => s + i.netSales, 0).toFixed(2),
+    totalPlatformFee: +all.reduce((s, i) => s + i.platformFee, 0).toFixed(2),
   }
 
   return ok({

@@ -86,6 +86,7 @@ export async function PATCH(req: NextRequest) {
         ...(restFields.acceptCounter !== undefined ? { acceptCounter: restFields.acceptCounter } : {}),
         ...(restFields.primaryColor !== undefined ? { primaryColor: restFields.primaryColor } : {}),
         ...(restFields.accentColor !== undefined ? { accentColor: restFields.accentColor } : {}),
+        ...(restFields.upiId !== undefined ? { upiId: restFields.upiId || null } : {}),
       },
     })
 

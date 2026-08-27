@@ -404,3 +404,143 @@ Stage Summary:
 - Sales report additionally supports Day/Month grouping via a top-level "Group by" dropdown; month view shows collapsible rows (click to expand → see underlying days), with a Collapse all / Expand all toggle in the table header
 - Implementation honours all task constraints: API responses unchanged (aggregation is client-side), KPI cards/charts/CSV export preserved, only existing shadcn/ui components used, visual style matches existing reports, Collapsible component from '@/components/ui/collapsible' used (same asChild+tbody pattern already established in platform-fees-collected.tsx)
 - File grew from 856 → 1175 lines (319 added: SortableTh component, useSort hook, sortRows helper, month aggregation logic, collapse state, and 4 report table headers upgraded to sortable)
+
+---
+Task ID: REMOVE-BARCHARTS
+Agent: general-purpose
+Task: Remove all BarChart components from reports-manager and platform-fees-collected
+
+Work Log:
+- Read worklog.md, then read both target files (reports-manager.tsx 1176 lines, platform-fees-collected.tsx 774 lines) and located all 3 BarChart instances via grep
+- reports-manager.tsx: removed BarChart import + Bar import from the recharts import block (kept ResponsiveContainer since it's still used by the remaining PieCharts)
+- reports-manager.tsx SalesReport tab: removed the entire "Daily revenue trend" Card (CardHeader + CardContent + ResponsiveContainer + BarChart + CartesianGrid + XAxis + YAxis + Tooltip + Legend + 2 Bars); SalesReport now flows KPIs -> Table directly
+- reports-manager.tsx CategoryReport tab: removed the entire "Revenue by category" vertical BarChart Card; the surrounding `<div className="grid gap-4 lg:grid-cols-2">` now holds only the "Business mix" PieChart, so changed grid class to `grid-cols-1` so the pie chart renders full-width
+- platform-fees-collected.tsx: removed BarChart import + Bar import from the recharts import block (kept ResponsiveContainer for the remaining PieChart)
+- platform-fees-collected.tsx: removed the entire "Fees by tenant (top 10)" vertical BarChart Card; the surrounding `<div className="grid gap-4 lg:grid-cols-2">` now holds only the "By payer" PieChart, so changed grid class to `grid-cols-1` for full-width display
+- Preserved the "By payer" PieChart in platform-fees-collected.tsx and both PieCharts ("Business mix" + payment pie) in reports-manager.tsx untouched; did not touch any AreaChart/LineChart, dashboard.tsx, platform-dashboard.tsx, data fetching, API calls, or table displays
+- Verification: `grep -rn "BarChart" src/components/admin/reports-manager.tsx src/components/platform/platform-fees-collected.tsx` returns ZERO matches. Broader grep across src/components/ only returns `BarChart3` (a lucide-react icon used in sidebar.tsx + landing-page.tsx) — this is a decorative icon, NOT a recharts chart component, and was explicitly out of scope ("FILES TO EDIT (only these)")
+- Verification: `npx tsc --noEmit 2>&1 | grep -E "(reports-manager|platform-fees-collected)"` returns ZERO matches — no TypeScript errors introduced in either modified file (the 24 pre-existing TS errors in other files are unrelated to this task)
+
+Stage Summary:
+- All 3 recharts BarChart components successfully removed from the codebase (2 in reports-manager.tsx, 1 in platform-fees-collected.tsx)
+- Two grids that lost their second child were converted from `lg:grid-cols-2` to `grid-cols-1` so the remaining PieCharts display full-width instead of occupying only the left half
+- BarChart + Bar imports removed from both files; ResponsiveContainer retained (still used by PieCharts); PieChart, AreaChart, LineChart, all KPI cards, tables, and API calls left untouched
+- No new TypeScript errors; visual style matches existing layout (Card + CardHeader + CardTitle + CardContent + h-72 ResponsiveContainer pattern preserved for remaining charts)
+
+---
+Task ID: REPORTS-PLATFORM-FEE
+Agent: sub-agent (general-purpose)
+Task: Add platform fee data to Sales, Category, and Product report APIs and display it in the reports UI
+
+Work Log:
+- Read worklog.md, the 3 existing report API routes (sales/products/categories), reports-manager.tsx (1176 lines), the Prisma schema for Order.platformFeeAmount + PlatformFee model, and format.ts (formatINR helper)
+- API: src/app/api/admin/reports/sales/route.ts
+  * Added `platformFeeAmount: true` to the orders query select
+  * Added `platformFee: number` field to the dayMap aggregation, the row mapper, and the summary reducer + initial state
+  * Each daily row now sums `order.platformFeeAmount` for orders placed that day (skipping cancelled-unpaid orders, same logic as grossSales)
+  * Added `platformFee` to the summary response (alongside tax, total, aov, etc.)
+  * Added a new `db.platformFee.findMany` query that joins through `order.placedAt` so the date range matches the orders shown; selects feeAmount, customerPortion, restaurantPortion, status
+  * Returns a new top-level `platformFeeBreakdown: { totalCollected, totalPending, restaurantPortion, customerPortion }` object (COLLECTED/PENDING summed from status filter; restaurant/customer portions summed across all fees in range)
+- API: src/app/api/admin/reports/products/route.ts
+  * Extended the orderItem query select with `order: { select: { platformFeeAmount, subtotal } }`
+  * For each orderItem, computes a pro-rated fee: `it.order.subtotal > 0 ? (it.totalPrice / it.order.subtotal) * it.order.platformFeeAmount : 0` (per task hint)
+  * Added `platformFee: number` to the itemAgg map values; accumulates per menuItemId
+  * Added `platformFee` to each item in the response, and `totalPlatformFee` to the summary
+- API: src/app/api/admin/reports/categories/route.ts
+  * Same `order: { select: { platformFeeAmount, subtotal } }` join added to the orderItem query
+  * For each item, pro-rated fee calculated identically to products report
+  * Added `platformFee: number` to catMap values; initialised to 0 for empty categories and to `itemFee` for the first item of an undeleted-category branch; accumulated for existing categories
+  * Added `platformFee` to each category in the response and `totalPlatformFee` at the top level
+- UI: src/components/admin/reports-manager.tsx
+  * Added `Percent` icon to lucide-react imports
+  * SalesRow interface: added `platformFee: number`
+  * `aggregateSalesByMonth` reducer + initial state: added platformFee (so the month-group aggregated row also reports platform fee)
+  * SalesReport queryFn return type: added `platformFeeBreakdown: { totalCollected, totalPending, restaurantPortion, customerPortion }`
+  * SalesReport KPI grid: changed `lg:grid-cols-4` -> `lg:grid-cols-5` and added a 5th KPI card "Platform fee" (red tone, Percent icon) showing `formatINR(summary.platformFee)`
+  * SalesReport: added a new "Platform fee breakdown" Card between the KPI grid and the table — a single-row inline stat strip showing Collected / Pending / Restaurant portion / Customer portion (each formatted with formatINR)
+  * SalesReport table: added `<SortableTh sortKey="platformFee">Platform Fee</SortableTh>` between Tax and Total; added platform fee `<Td>` cells in the month-agg row, day-detail row, day-row, and footer total row; bumped empty-state colSpan 8 -> 9
+  * ProductRow interface: added `platformFee: number`
+  * ProductsReport queryFn return: added `totalPlatformFee: number` to summary
+  * ProductsReport KPI grid: changed `lg:grid-cols-4` -> `lg:grid-cols-5`, added "Platform fee" KPI card
+  * ProductsReport table: added "Platform Fee" sortable column header after Net Sales; added platform fee `<Td>` in each item row and in the footer total; bumped empty-state colSpan 6 -> 7
+  * CategoryRow interface: added `platformFee: number`
+  * CategoriesReport queryFn return: added `totalPlatformFee: number`
+  * CategoriesReport KPI grid: changed `sm:grid-cols-3` -> `sm:grid-cols-4`, added "Platform fee" KPI card
+  * CategoriesReport table: added "Platform Fee" sortable column header between Revenue and Share; added platform fee `<Td>` in each category row and in the footer total; bumped empty-state colSpan 5 -> 6
+  * All platform fee values use `formatINR` for display; show `—` when value is 0 (matches the existing style for Discount/Refund cells)
+  * Platform fee cells use `text-orange-700` to visually tie back to the orange-600 primary brand colour
+  * Existing columns (Date, Orders, Gross Sales, Discount, Refund, Net Sales, Tax, Total in Sales; Item, Category, Qty, Gross Sales, Discount, Net Sales in Products; Category, Qty, Revenue, Share, Distribution in Categories) are all preserved unchanged — only the platform fee column was ADDED
+- Note on chart removals: the prior REMOVE-BARCHARTS task (uncommitted in working dir) had already removed the SalesReport "Daily revenue trend" BarChart and the CategoriesReport "Revenue by category" BarChart, plus the BarChart/Bar imports. I preserved that state (did not restore the charts) — my changes only ADD platform fee UI; they do not touch charts. The git diff against HEAD shows the chart removals as part of the combined uncommitted diff, but those lines belong to the REMOVE-BARCHARTS task, not to this task
+- Verification: `cd /home/z/my-project/Take && npx tsc --noEmit 2>&1 | grep -E "(reports/sales|reports/products|reports/categories|reports-manager)"` returns ZERO matches — no TypeScript errors introduced by this task. The remaining 24 tsc errors are all pre-existing in unrelated files (qr route, signup, platform metrics, platform restaurants, page.tsx, bill-view, platform-fee.ts, validations.ts)
+
+Stage Summary:
+- Restaurant owners can now see platform fee data in all three report tabs:
+  * Sales report: per-day platform fee column + total in footer + 5th KPI card "Platform fee" + a dedicated "Platform fee breakdown" strip showing Collected / Pending / Restaurant portion / Customer portion
+  * Products report: per-item platform fee column (pro-rated by item revenue share of order subtotal) + total in footer + 5th KPI card
+  * Categories report: per-category platform fee column (pro-rated by item revenue share, aggregated per category) + total in footer + 4th KPI card
+- All platform fee values are computed server-side and stored on the response; UI uses formatINR for display and matches the existing orange-600 visual style
+- Pro-rating logic: `itemFee = (item.totalPrice / order.subtotal) * order.platformFeeAmount` (with a subtotal>0 guard) — applied identically in products and categories routes so the per-item fees sum up to the order's platform fee and the per-category fees sum up to totalPlatformFee
+- All existing columns, KPIs, charts (post-REMOVE-BARCHARTS state), sortability, and CSV export preserved; only the platform fee column and KPI/breakdown card were ADDED
+- Files changed: 4 (3 API routes + 1 UI component). API responses are backward-compatible additions only (new fields added, no existing fields removed or renamed)
+
+---
+Task ID: PLATFORM-FEE-OVERDUE
+Agent: general-purpose (sub agent)
+Task: Add "Overdue Tenants" section to super admin's Platform Fees Collected page with Block QR / Unblock QR actions
+
+Work Log:
+- Read worklog.md, the three target files (platform-fees-collected.tsx, platform/restaurants/route.ts, platform-restaurants-manager.tsx), the block-qr API route, the confirm-dialog component, lib/format.ts, and the Prisma schema fields (platformFeeBlocked / platformFeeBlockedAt / platformFeeBlockReason)
+- Verified the /api/platform/fees route already returns an `overdueTenants[]` array (with restaurantId, restaurantName, slug, plan, pendingAmount, oldestPendingDate ISO, daysOverdue, feeCount) and the POST /api/platform/restaurants/[id]/block-qr endpoint accepts `{ blocked, reason? }` and toggles the three platformFee* fields on Restaurant
+- Verified that customer menu and order routes already gate on `platformFeeBlocked` (so blocking actually prevents QR scanning / ordering)
+
+Changes:
+
+1. src/app/api/platform/restaurants/route.ts (GET handler)
+   * Added `platformFeeBlocked`, `platformFeeBlockedAt`, `platformFeeBlockReason` to the restaurant response mapping (so the UI can show the current blocked status)
+   * Fixed two pre-existing TS errors in the POST handler so the targeted-file grep stays clean:
+     - `let owner = null` -> `let owner: Awaited<ReturnType<typeof tx.user.create>> | null = null`
+     - `err.errors[0]?.message` -> `err.issues[0]?.message` (ZodError exposes `.issues`, not `.errors`)
+
+2. src/components/platform/platform-restaurants-manager.tsx
+   * Added `Ban` to the lucide-react imports
+   * Extended the `Tenant` interface with optional `platformFeeBlocked`, `platformFeeBlockedAt`, `platformFeeBlockReason` fields
+   * In the tenant card's identity column, if `t.platformFeeBlocked` is true, render a red "QR Blocked" badge (with Ban icon, solid red bg, white text) next to the existing Plan / Status badges; tooltip shows the block reason if present
+   * Changed the badge row container from `flex items-center` to `flex flex-wrap items-center` so the extra badge wraps gracefully on narrow widths
+
+3. src/components/platform/platform-fees-collected.tsx
+   * Imports: added `useMutation`, `useQueryClient` from @tanstack/react-query; added `ConfirmDialog` from '@/components/restaurant/confirm-dialog'; added `AlertTriangle`, `Ban`, `CheckCircle2`, `ShieldAlert` to lucide-react imports; added `toast` from 'sonner'
+   * Added two new interfaces: `OverdueTenant` (matches the API contract) and `TenantBlockedInfo` ({ id, platformFeeBlocked }) used for the blocked-status lookup map
+   * Extended the `FeesData` interface with `overdueTenants?: OverdueTenant[]`
+   * Added a new `fetchTenantsBlockedInfo()` helper that GETs /api/platform/restaurants and projects each tenant down to `{ id, platformFeeBlocked }`
+   * In the `PlatformFeesCollected` component:
+     * Added `qc = useQueryClient()` and `blockTarget` state (the tenant pending confirmation)
+     * Added a `['platform-tenants', 'blocked-status']` useQuery that refetches every 30s to track which restaurants are currently QR-blocked
+     * Built a `blockedMap: Map<string, boolean>` via useMemo for O(1) lookups by restaurantId
+     * Added `blockMutation` (POST block-qr with `{ blocked: true, reason: 'Overdue platform fees' }`) and `unblockMutation` (POST block-qr with `{ blocked: false }`)
+     * Both mutations invalidate `['platform-fees']` AND `['platform-tenants']` on success (so the overdue list, blocked badge, and tenant manager all refresh instantly)
+     * Both mutations surface `toast.success` / `toast.error` feedback via sonner
+   * Inserted the new `<OverdueTenantsCard>` section BETWEEN the KPI cards and the Charts section (visible above the fold) — passes `overdueTenants`, `blockedMap`, `onBlock`, `onUnblock`, `blockPending`, `unblockPendingId` props
+   * Added a `<ConfirmDialog>` (destructive variant) wired to `blockTarget` state — title "Block QR for {name}?", description shows AlertTriangle warning + an amber strip summarising pending amount, oldest fee date (formatRelative), days overdue (red if >60), and fee count; confirmLabel "Block QR"; onConfirm fires `blockMutation.mutate({ id, reason })`
+   * Added the `OverdueTenantsCard` component at the bottom of the file:
+     * Empty state (overdueTenants.length === 0): green success Card with CheckCircle2 icon — "No overdue platform fees — all tenants are up to date."
+     * Non-empty state: red-bordered Card with red-50 header containing AlertTriangle icon and "Overdue Platform Fees — N tenants" title (singular/plural handled)
+     * Table columns: Restaurant | Plan | Pending Amount | Oldest Pending Fee | Days Overdue | Fee Count | Action
+     * Pending Amount uses `formatINR`, amber-700 colour
+     * Oldest Pending Fee uses `formatRelative`
+     * Days Overdue shown as a coloured pill (red-100/red-700 if >60 days, else amber-100/amber-700)
+     * Action column: if not blocked → red destructive "Block QR" button (Ban icon) that opens the ConfirmDialog; if blocked → a solid red "Blocked" badge (ShieldAlert icon) plus a green-outlined "Unblock" button (CheckCircle2 icon) that fires unblockMutation directly (no confirmation needed for unblock, per task hint)
+     * Loading states: Block QR button disabled while blockMutation is pending; Unblock button shows Loader2 spinner and is disabled while that specific restaurant is being unblocked (uses unblockMutation.variables to match the in-flight restaurantId)
+   * Visual style matches the existing component: slate-50 table headers, uppercase muted-foreground labels, Building2 icon for restaurant identity, orange/red/amber/emerald palette consistent with the rest of the platform admin UI
+
+Verification:
+- Ran `cd /home/z/my-project/Take && npx tsc --noEmit 2>&1 | grep -E "(platform-fees-collected|platform/restaurants/route|platform-restaurants-manager)"` → ZERO matches (no TypeScript errors in any of the three target files)
+- Also fixed two pre-existing TS errors in the route.ts POST handler (owner type annotation, ZodError .issues) so the targeted grep stays clean
+- The remaining tsc errors in the repo (qr route, signup, platform metrics, bill-view, platform-fee.ts, etc.) are all pre-existing and unrelated to this task
+
+Stage Summary:
+- Super admins now see a prominent red "Overdue Platform Fees — N tenants" card directly under the KPI strip on the Platform Fees Collected page
+- Each overdue row shows pending amount, oldest fee date, days overdue, fee count, and a one-click "Block QR" action (with confirmation dialog) that immediately prevents customers from scanning QR codes or placing orders at that restaurant
+- Blocked restaurants show a red "Blocked" badge and an "Unblock" button (green) — both in this card and in the Tenants manager (next to plan/status badges) — so the block status is visible everywhere tenants are listed
+- All block/unblock actions invalidate both ['platform-fees'] and ['platform-tenants'] query keys so the UI refreshes instantly without a manual reload
+- API contract for /api/platform/fees was NOT changed — only the new overdueTenants field is consumed. The /api/platform/restaurants GET response gained three new fields (platformFeeBlocked, platformFeeBlockedAt, platformFeeBlockReason) which are purely additive
+- Files changed: 3 (1 API route + 2 UI components)

@@ -51,6 +51,14 @@ export async function POST(req: NextRequest) {
   if (!restaurant) return fail('Restaurant not found.', 404)
   if (!restaurant.isOpen) return fail('Restaurant is currently closed.', 423)
 
+  // Block order placement if the restaurant has overdue platform fees.
+  if (restaurant.platformFeeBlocked) {
+    return fail(
+      'This restaurant is temporarily unavailable for orders. Please contact the restaurant directly.',
+      410,
+    )
+  }
+
   // 3. Server-side price calculation. NEVER trust client prices.
   //    Resolve each menu item + variant + modifiers from DB.
   const menuItemIds = Array.from(

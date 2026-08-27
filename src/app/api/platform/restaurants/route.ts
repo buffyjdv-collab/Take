@@ -71,6 +71,9 @@ export async function GET(req: Request) {
       trialEndsAt: r.trialEndsAt,
       suspendedAt: r.suspendedAt,
       suspendedReason: r.suspendedReason,
+      platformFeeBlocked: r.platformFeeBlocked,
+      platformFeeBlockedAt: r.platformFeeBlockedAt,
+      platformFeeBlockReason: r.platformFeeBlockReason,
       isOpen: r.isOpen,
       createdAt: r.createdAt,
       counts: r._count,
@@ -152,7 +155,7 @@ export async function POST(req: Request) {
       await tx.restaurantSettings.create({ data: { restaurantId: restaurant.id } })
 
       // Create owner if password provided
-      let owner = null
+      let owner: Awaited<ReturnType<typeof tx.user.create>> | null = null
       if (parsed.ownerPassword && parsed.ownerEmail) {
         const passwordHash = await bcrypt.hash(parsed.ownerPassword, 10)
         owner = await tx.user.create({
@@ -209,7 +212,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true, data: result }, { status: 201 })
   } catch (err) {
     if (err instanceof z.ZodError) {
-      return NextResponse.json({ error: err.errors[0]?.message }, { status: 400 })
+      return NextResponse.json({ error: err.issues[0]?.message }, { status: 400 })
     }
     console.error('[platform/restaurants] error:', err)
     return NextResponse.json({ error: 'Failed to create tenant' }, { status: 500 })

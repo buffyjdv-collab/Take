@@ -40,6 +40,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  Ban,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { formatINR, formatRelative } from '@/lib/format'
@@ -59,6 +60,9 @@ interface Tenant {
   trialEndsAt?: string | null
   suspendedAt?: string | null
   suspendedReason?: string | null
+  platformFeeBlocked?: boolean
+  platformFeeBlockedAt?: string | null
+  platformFeeBlockReason?: string | null
   isOpen: boolean
   createdAt: string
   counts: { tables: number; menuItems: number; users: number; orders: number; branches: number }
@@ -225,10 +229,23 @@ export function PlatformRestaurantsManager() {
                       <Building2 className="h-5 w-5" />
                     </div>
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <h3 className="truncate text-sm font-semibold">{t.name}</h3>
                         <PlanBadge plan={t.plan} />
                         <StatusBadge status={t.subscriptionStatus} />
+                        {t.platformFeeBlocked && (
+                          <span
+                            className="inline-flex items-center gap-1 rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold uppercase text-white"
+                            title={
+                              t.platformFeeBlockReason
+                                ? `QR Blocked: ${t.platformFeeBlockReason}`
+                                : 'QR Blocked — customers cannot scan codes'
+                            }
+                          >
+                            <Ban className="h-3 w-3" />
+                            QR Blocked
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-muted-foreground">
                         {t.city || '—'} · /{t.slug} · created {formatRelative(t.createdAt)}

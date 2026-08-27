@@ -112,19 +112,25 @@ export const modifierGroupSchema = z.object({
 // Admin: menu item
 // Image may be:
 //   - empty string
+//   - null (coerced to '' — happens when loading an item with no image from DB)
 //   - a public URL (https://…)
 //   - a data URL (data:image/...;base64,…) uploaded via the menu editor
 //   - a server-relative path (/uploads/…) returned by /api/admin/upload
 export const menuItemImageSchema = z
-  .string()
-  .max(7_500_000, 'Image payload too large (max 5MB for data URLs)')
-  .refine(
-    (v) =>
-      v === '' ||
-      /^https?:\/\//i.test(v) ||
-      /^data:image\/(png|jpe?g|webp|gif|svg\+xml);base64,/i.test(v) ||
-      /^\/uploads\//i.test(v),
-    'Image must be a URL, a data URL, or an /uploads/ path',
+  .union([z.string(), z.null()])
+  .transform((v) => (v == null ? '' : v))
+  .pipe(
+    z
+      .string()
+      .max(7_500_000, 'Image payload too large (max 5MB for data URLs)')
+      .refine(
+        (v) =>
+          v === '' ||
+          /^https?:\/\//i.test(v) ||
+          /^data:image\/(png|jpe?g|webp|gif|svg\+xml);base64,/i.test(v) ||
+          /^\/uploads\//i.test(v),
+        'Image must be a URL, a data URL, or an /uploads/ path',
+      ),
   )
   .optional()
   .or(z.literal(''))
@@ -194,33 +200,49 @@ export const staffUpdateSchema = z.object({
   password: z.string().min(6).max(120).optional(),
 })
 
+// Helper: accept string, null, or undefined → returns string or undefined.
+// Used for fields that come back as null from the DB but the schema expects
+// a string (or empty string). Without this, sending `null` for `logo` / `email`
+// / `website` triggers "expected string, received null" validation errors.
+const nullableString = z
+  .union([z.string(), z.null()])
+  .transform((v) => (v == null ? '' : v))
+  .optional()
+
 // Admin: settings
 export const settingsSchema = z.object({
   name: z.string().min(1).max(120).optional(),
-  tagline: z.string().max(120).optional(),
-  description: z.string().max(1000).optional(),
-  address: z.string().max(280).optional(),
-  phone: z.string().max(20).optional(),
-  email: z.string().email().optional().or(z.literal('')),
-  website: z.string().max(120).optional(),
-  logo: z.string().url().optional().or(z.literal('')),
-  gstNumber: z.string().max(30).optional(),
-  panNumber: z.string().max(20).optional(),
+  tagline: nullableString,
+  description: nullableString,
+  address: nullableString,
+  phone: nullableString,
+  email: z
+    .union([z.string(), z.null()])
+    .transform((v) => (v == null ? '' : v))
+    .refine((v) => v === '' || z.string().email().safeParse(v).success, 'Invalid email'),
+  website: nullableString,
+  logo: z
+    .union([z.string(), z.null()])
+    .transform((v) => (v == null ? '' : v))
+    .refine((v) => v === '' || z.string().url().safeParse(v).success, 'Invalid URL'),
+  gstNumber: nullableString,
+  panNumber: nullableString,
   taxRate: z.number().min(0).max(1).optional(),
   serviceChargeRate: z.number().min(0).max(1).optional(),
-  openingTime: z.string().max(10).optional(),
-  closingTime: z.string().max(10).optional(),
+  openingTime: nullableString,
+  closingTime: nullableString,
   isOpen: z.boolean().optional(),
   acceptUpi: z.boolean().optional(),
   acceptCard: z.boolean().optional(),
   acceptCash: z.boolean().optional(),
   acceptCounter: z.boolean().optional(),
-  primaryColor: z.string().max(20).optional(),
-  accentColor: z.string().max(20).optional(),
+  primaryColor: nullableString,
+  accentColor: nullableString,
+  upiId: nullableString,
   settings: z
     .object({
-      receiptHeader: z.string().max(280).optional(),
-      receiptFooter: z.string().max(280).optional(),
+      receiptHeader: nullableString,
+      receiptFooter: nullableString,
       showLogoOnReceipt: z.boolean().optional(),
       notifyKitchenOnNewOrder: z.boolean().optional(),
       notifyWaiterOnBillRequest: z.boolean().optional(),

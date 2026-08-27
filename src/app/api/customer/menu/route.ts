@@ -20,6 +20,15 @@ export async function GET(req: NextRequest) {
   const restaurant = table.restaurant
   if (!restaurant) return fail('Restaurant not found.', 404)
 
+  // Block QR menu access if the restaurant has overdue platform fees.
+  // The super admin can toggle this from the Platform Fees page.
+  if (restaurant.platformFeeBlocked) {
+    return fail(
+      'This restaurant is temporarily unavailable. Please contact the restaurant directly.',
+      410,
+    )
+  }
+
   const [categories, items, modifierGroups] = await Promise.all([
     db.menuCategory.findMany({
       where: { restaurantId: restaurant.id, active: true },
@@ -68,6 +77,7 @@ export async function GET(req: NextRequest) {
       acceptCard: restaurant.acceptCard,
       acceptCash: restaurant.acceptCash,
       acceptCounter: restaurant.acceptCounter,
+      upiId: restaurant.upiId,
       settings: restaurant.settings,
     },
     table: {

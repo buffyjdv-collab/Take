@@ -2,10 +2,16 @@ import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { fail, ok } from '@/lib/api-helpers'
 import { initiatePaymentSchema } from '@/lib/validations'
+import { buildUpiDeepLink, buildUpiQrPayload } from '@/lib/upi'
 
 export const dynamic = 'force-dynamic'
 
 // POST /api/customer/payment/initiate
+// Body: { orderId, method: 'UPI' | 'CARD' | 'WALLET' }
+// For UPI method, also returns:
+//   - upiDeepLink: upi://pay?... URL that opens the customer's UPI app
+//   - upiQrPayload: the string to encode in a QR code (same as deep link)
+//   - upiId: the restaurant's UPI ID (VPA)
 export async function POST(req: NextRequest) {
   let body: unknown
   try {
@@ -33,6 +39,30 @@ export async function POST(req: NextRequest) {
     return fail('Card payments are not accepted.', 403)
   // WALLET treated like UPI for acceptance
 
+  // For UPI method, require the restaurant to have a UPI ID configured
+  let upiDeepLink: string | undefined
+  let upiQrPayload: string | undefined
+  if (input.method === 'UPI') {
+    if (!r.upiId) {
+      return fail(
+        'This restaurant has not configured a UPI ID yet. Please choose another payment method or pay in cash.',
+        400,
+      )
+    }
+    upiDeepLink = buildUpiDeepLink(
+      r.upiId,
+      order.grandTotal,
+      order.orderNumber,
+      r.name,
+    )
+    upiQrPayload = buildUpiQrPayload(
+      r.upiId,
+      order.grandTotal,
+      order.orderNumber,
+      r.name,
+    )
+  }
+
   // Create payment record with status PROCESSING
   const providerTxnId = `MOCK-${Date.now()}-${Math.random()
     .toString(36)
@@ -46,7 +76,7 @@ export async function POST(req: NextRequest) {
       status: 'PROCESSING',
       amount: order.grandTotal,
       currency: r.currency,
-      provider: 'MOCK',
+      provider: input.method === 'UPI' ? 'UPI' : 'MOCK',
       providerTxnId,
       idempotencyKey: `pay-${order.id}-${Date.now()}`,
     },
@@ -67,7 +97,14 @@ export async function POST(req: NextRequest) {
     amount: order.grandTotal,
     currency: r.currency,
     method: input.method,
-    // Mock: tell client to "verify" in 2 seconds
+    // For UPI: include deep link + QR payload + the VPA
+    upiDeepLink,
+    upiQrPayload,
+    upiId: r.upiId || undefined,
+    restaurantName: r.name,
+    orderNumber: order.orderNumber,
+    // Mock: tell client to "verify" in 2 seconds (simulates the customer
+    // completing the payment in their UPI app)
     verifyInMs: 1500,
   })
 }

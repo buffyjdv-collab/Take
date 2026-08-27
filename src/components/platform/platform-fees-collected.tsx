@@ -1,10 +1,11 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { ConfirmDialog } from '@/components/restaurant/confirm-dialog'
 import {
   Select,
   SelectTrigger,
@@ -19,8 +20,6 @@ import {
 } from '@/components/ui/collapsible'
 import {
   ResponsiveContainer,
-  BarChart,
-  Bar,
   PieChart,
   Pie,
   Cell,
@@ -42,7 +41,12 @@ import {
   ArrowDown,
   ChevronsDownUp,
   ChevronsUpDown,
+  AlertTriangle,
+  Ban,
+  CheckCircle2,
+  ShieldAlert,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { formatINR, formatRelative } from '@/lib/format'
 
 const PIE_COLORS = ['#EA580C', '#16A34A', '#9333EA', '#0EA5E9', '#F59E0B']
@@ -107,6 +111,22 @@ interface RecentFee {
   order: { id: string; orderNumber: string; grandTotal: number }
 }
 
+interface OverdueTenant {
+  restaurantId: string
+  restaurantName: string
+  slug: string
+  plan: string
+  pendingAmount: number
+  oldestPendingDate: string
+  daysOverdue: number
+  feeCount: number
+}
+
+interface TenantBlockedInfo {
+  id: string
+  platformFeeBlocked: boolean
+}
+
 interface FeesData {
   range: string
   from: string
@@ -121,6 +141,7 @@ interface FeesData {
   byFeeType: Array<{ feeType: string; amount: number }>
   byPayer: Array<{ payer: string; amount: number }>
   recentFees: RecentFee[]
+  overdueTenants?: OverdueTenant[]
 }
 
 type SortColumn =
@@ -172,6 +193,16 @@ async function fetchFees(range: string, groupBy: GroupBy): Promise<FeesData> {
   return json.data
 }
 
+async function fetchTenantsBlockedInfo(): Promise<TenantBlockedInfo[]> {
+  const res = await fetch('/api/platform/restaurants?search=', { cache: 'no-store' })
+  if (!res.ok) throw new Error('Failed to load tenants')
+  const json = await res.json()
+  return (json.data || []).map((t: any) => ({
+    id: t.id,
+    platformFeeBlocked: !!t.platformFeeBlocked,
+  }))
+}
+
 export function PlatformFeesCollected() {
   const [range, setRange] = useState('30d')
   const [groupBy, setGroupBy] = useState<GroupBy>('month')
@@ -187,10 +218,72 @@ export function PlatformFeesCollected() {
   // Expand/collapse state for recent fees buckets
   const [expandedRecent, setExpandedRecent] = useState<Set<string>>(new Set())
 
+  const qc = useQueryClient()
+  const [blockTarget, setBlockTarget] = useState<OverdueTenant | null>(null)
+
   const { data, isLoading } = useQuery({
     queryKey: ['platform-fees', range, groupBy],
     queryFn: () => fetchFees(range, groupBy),
     refetchInterval: 30_000,
+  })
+
+  // Look up the current platformFeeBlocked flag for each restaurant so we can
+  // show a "Blocked" badge / "Unblock" button instead of "Block QR".
+  const { data: tenantsBlockedInfo } = useQuery({
+    queryKey: ['platform-tenants', 'blocked-status'],
+    queryFn: fetchTenantsBlockedInfo,
+    refetchInterval: 30_000,
+  })
+
+  const blockedMap = useMemo<Map<string, boolean>>(() => {
+    const m = new Map<string, boolean>()
+    for (const t of tenantsBlockedInfo || []) {
+      m.set(t.id, !!t.platformFeeBlocked)
+    }
+    return m
+  }, [tenantsBlockedInfo])
+
+  const blockMutation = useMutation({
+    mutationFn: async ({ id, reason }: { id: string; reason: string }) => {
+      const res = await fetch(`/api/platform/restaurants/${id}/block-qr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blocked: true, reason }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j.error || 'Failed to block QR')
+      }
+      return res.json()
+    },
+    onSuccess: () => {
+      toast.success('QR blocked — customers can no longer scan codes at this restaurant')
+      qc.invalidateQueries({ queryKey: ['platform-fees'] })
+      qc.invalidateQueries({ queryKey: ['platform-tenants'] })
+      setBlockTarget(null)
+    },
+    onError: (err: Error) => toast.error(err.message || 'Failed to block QR'),
+  })
+
+  const unblockMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`/api/platform/restaurants/${id}/block-qr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blocked: false }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j.error || 'Failed to unblock QR')
+      }
+      return res.json()
+    },
+    onSuccess: () => {
+      toast.success('QR unblocked — customers can scan codes again')
+      qc.invalidateQueries({ queryKey: ['platform-fees'] })
+      qc.invalidateQueries({ queryKey: ['platform-tenants'] })
+    },
+    onError: (err: Error) => toast.error(err.message || 'Failed to unblock QR'),
   })
 
   // ----- Sorting + totals for the by-tenant table -----
@@ -357,40 +450,57 @@ export function PlatformFeesCollected() {
         <KpiCard label="Total fees" value={String(data.totalFees)} icon={<TrendingUp className="h-4 w-4" />} tone="blue" />
       </div>
 
-      {/* Charts */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Fees by tenant (top 10)</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-72 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={data.byTenant.slice(0, 10)}
-                  layout="vertical"
-                  margin={{ left: 30, right: 30, top: 8, bottom: 8 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
-                  <XAxis type="number" tick={{ fontSize: 11 }} stroke="#94a3b8" tickFormatter={(v) => `₹${v.toFixed(0)}`} />
-                  <YAxis
-                    type="category"
-                    dataKey="restaurantName"
-                    tick={{ fontSize: 11 }}
-                    stroke="#94a3b8"
-                    width={100}
-                  />
-                  <Tooltip
-                    contentStyle={{ fontSize: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}
-                    formatter={(v: number) => formatINR(v)}
-                  />
-                  <Bar dataKey="collected" fill="#EA580C" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
+      {/* Overdue tenants — pending fees older than 30 days */}
+      <OverdueTenantsCard
+        overdueTenants={data.overdueTenants || []}
+        blockedMap={blockedMap}
+        onBlock={setBlockTarget}
+        onUnblock={(t) => unblockMutation.mutate(t.restaurantId)}
+        blockPending={blockMutation.isPending}
+        unblockPendingId={unblockMutation.isPending ? unblockMutation.variables ?? null : null}
+      />
 
+      {/* Confirmation dialog for blocking a tenant's QR */}
+      <ConfirmDialog
+        open={!!blockTarget}
+        onOpenChange={(v) => !v && setBlockTarget(null)}
+        title={blockTarget ? `Block QR for ${blockTarget.restaurantName}?` : ''}
+        description={
+          blockTarget ? (
+            <div className="space-y-2 text-sm">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+                <p>
+                  This will <span className="font-semibold text-red-700">prevent customers</span> from
+                  scanning QR codes or placing orders at{' '}
+                  <strong>{blockTarget.restaurantName}</strong> ({blockTarget.slug}). The restaurant
+                  will remain blocked until you manually unblock it.
+                </p>
+              </div>
+              <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span>Pending amount: <span className="font-semibold">{formatINR(blockTarget.pendingAmount)}</span></span>
+                  <span>Oldest fee: <span className="font-semibold">{formatRelative(blockTarget.oldestPendingDate)}</span></span>
+                  <span>Days overdue: <span className="font-semibold text-red-700">{blockTarget.daysOverdue}</span></span>
+                  <span>Fee count: <span className="font-semibold">{blockTarget.feeCount}</span></span>
+                </div>
+              </div>
+            </div>
+          ) : undefined
+        }
+        confirmLabel="Block QR"
+        variant="destructive"
+        onConfirm={() => {
+          if (!blockTarget) return
+          blockMutation.mutate({
+            id: blockTarget.restaurantId,
+            reason: 'Overdue platform fees',
+          })
+        }}
+      />
+
+      {/* Charts */}
+      <div className="grid gap-4 grid-cols-1">
         <Card>
           <CardHeader>
             <CardTitle className="text-base">By payer</CardTitle>
@@ -767,6 +877,161 @@ function KpiCard({
           <p className="mt-1 text-2xl font-bold tracking-tight">{value}</p>
         </div>
         <div className={`flex h-9 w-9 items-center justify-center rounded-lg ${toneClass}`}>{icon}</div>
+      </CardContent>
+    </Card>
+  )
+}
+
+/**
+ * Overdue Tenants card — shows restaurants whose pending platform fees are
+ * older than 30 days. Each row has a "Block QR" action that prevents
+ * customers from scanning that restaurant's QR codes (or a "Blocked" badge
+ * + "Unblock" button if already blocked).
+ */
+function OverdueTenantsCard({
+  overdueTenants,
+  blockedMap,
+  onBlock,
+  onUnblock,
+  blockPending,
+  unblockPendingId,
+}: {
+  overdueTenants: OverdueTenant[]
+  blockedMap: Map<string, boolean>
+  onBlock: (t: OverdueTenant) => void
+  onUnblock: (t: OverdueTenant) => void
+  blockPending: boolean
+  unblockPendingId: string | null
+}) {
+  // Empty state — all tenants are up to date
+  if (overdueTenants.length === 0) {
+    return (
+      <Card className="border-emerald-200 bg-emerald-50/40">
+        <CardContent className="flex items-center gap-3 p-4">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
+            <CheckCircle2 className="h-5 w-5" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-emerald-800">
+              No overdue platform fees — all tenants are up to date.
+            </p>
+            <p className="text-xs text-emerald-700/80">
+              Restaurants with pending fees older than 30 days will appear here.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <Card className="border-red-200">
+      <CardHeader className="border-b border-red-100 bg-red-50/60 p-4">
+        <div className="flex items-center gap-2">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-red-100 text-red-700">
+            <AlertTriangle className="h-4 w-4" />
+          </div>
+          <div>
+            <CardTitle className="text-base text-red-800">
+              Overdue Platform Fees — {overdueTenants.length} {overdueTenants.length === 1 ? 'tenant' : 'tenants'}
+            </CardTitle>
+            <p className="text-xs text-red-700/80">
+              Pending fees older than 30 days. Block QR to prevent customers from ordering until fees are settled.
+            </p>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="p-0">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="border-b bg-slate-50 text-left">
+              <tr>
+                <th className="px-4 py-2 text-xs font-semibold uppercase text-muted-foreground">Restaurant</th>
+                <th className="px-4 py-2 text-xs font-semibold uppercase text-muted-foreground">Plan</th>
+                <th className="px-4 py-2 text-right text-xs font-semibold uppercase text-muted-foreground">Pending Amount</th>
+                <th className="px-4 py-2 text-xs font-semibold uppercase text-muted-foreground">Oldest Pending Fee</th>
+                <th className="px-4 py-2 text-right text-xs font-semibold uppercase text-muted-foreground">Days Overdue</th>
+                <th className="px-4 py-2 text-right text-xs font-semibold uppercase text-muted-foreground">Fee Count</th>
+                <th className="px-4 py-2 text-right text-xs font-semibold uppercase text-muted-foreground">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {overdueTenants.map((t) => {
+                const isBlocked = blockedMap.get(t.restaurantId) === true
+                const isUnblocking = unblockPendingId === t.restaurantId
+                return (
+                  <tr key={t.restaurantId} className="border-b last:border-0 hover:bg-slate-50">
+                    <td className="px-4 py-2">
+                      <div className="flex items-center gap-2">
+                        <Building2 className="h-4 w-4 text-muted-foreground" />
+                        <div className="min-w-0">
+                          <p className="truncate font-medium">{t.restaurantName}</p>
+                          <p className="text-[10px] text-muted-foreground">/{t.slug}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2"><Badge variant="outline">{t.plan}</Badge></td>
+                    <td className="px-4 py-2 text-right font-semibold text-amber-700">
+                      {formatINR(t.pendingAmount)}
+                    </td>
+                    <td className="px-4 py-2 text-xs text-muted-foreground">
+                      {formatRelative(t.oldestPendingDate)}
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-xs font-bold ${
+                          t.daysOverdue > 60
+                            ? 'bg-red-100 text-red-700'
+                            : 'bg-amber-100 text-amber-700'
+                        }`}
+                      >
+                        {t.daysOverdue}d
+                      </span>
+                    </td>
+                    <td className="px-4 py-2 text-right">{t.feeCount}</td>
+                    <td className="px-4 py-2 text-right">
+                      {isBlocked ? (
+                        <div className="flex items-center justify-end gap-2">
+                          <span
+                            className="inline-flex items-center gap-1 rounded bg-red-600 px-2 py-1 text-[10px] font-bold uppercase text-white"
+                            title="Customers cannot scan QR codes at this restaurant"
+                          >
+                            <ShieldAlert className="h-3 w-3" />
+                            Blocked
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                            disabled={isUnblocking}
+                            onClick={() => onUnblock(t)}
+                          >
+                            {isUnblocking ? (
+                              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                            )}
+                            Unblock
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          disabled={blockPending}
+                          onClick={() => onBlock(t)}
+                        >
+                          <Ban className="mr-1 h-3.5 w-3.5" />
+                          Block QR
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       </CardContent>
     </Card>
   )

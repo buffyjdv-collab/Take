@@ -180,6 +180,10 @@ model Restaurant {
   acceptCash      Boolean  @default(true)
   acceptCounter   Boolean  @default(true)
 
+  // UPI ID for receiving payments (e.g. restaurant@okhdfcbank)
+  // Used to generate UPI deep links + QR codes for customer payments
+  upiId           String?
+
   // Theme
   primaryColor    String   @default("#EA580C")   // warm orange (food-friendly)
   accentColor     String   @default("#16A34A")    // green for veg indicators
@@ -191,6 +195,13 @@ model Restaurant {
   suspendedAt     DateTime?
   suspendedReason String?
   onboardedById   String?  // super admin who created this tenant (null = self-signup)
+
+  // Platform fee block — when true, customers cannot scan QR codes to place
+  // orders. Set by the super admin when a restaurant has overdue platform
+  // fees (pending for more than 30 days).
+  platformFeeBlocked   Boolean  @default(false)
+  platformFeeBlockedAt DateTime?
+  platformFeeBlockReason String?
 
   users           User[]           @relation("RestaurantStaff")
   branches        Branch[]

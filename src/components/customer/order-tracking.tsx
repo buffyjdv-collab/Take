@@ -1,18 +1,24 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useCustomerOrder, useCancelOrder, useInitiatePayment, useVerifyPayment } from '@/hooks/api'
 import { useSocketEvent } from '@/hooks/use-socket'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { OrderStatusBadge } from '@/components/restaurant/order-status-badge'
 import { PaymentStatusBadge } from '@/components/restaurant/payment-status-badge'
 import { LoadingSpinner, EmptyState } from '@/components/restaurant/loading-states'
 import { Price, formatINR } from '@/components/restaurant/price'
-import { BellRing, CheckCircle2, Clock, ChefHat, PackageCheck, Utensils, XCircle, CreditCard, Loader2 } from 'lucide-react'
+import { BellRing, CheckCircle2, Clock, ChefHat, PackageCheck, Utensils, XCircle, CreditCard, Loader2, Smartphone, QrCode, Banknote, Copy } from 'lucide-react'
 import { toast } from 'sonner'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
 import type { OrderStatus } from '@/lib/types'
 import type { RestaurantInfo } from './types'
@@ -92,6 +98,7 @@ export function OrderTracking({
   const isPaid = order.paymentStatus === 'PAID'
   const isCompleted = order.status === 'COMPLETED'
   const isPendingPayment = order.status === 'PENDING_PAYMENT'
+  const isServed = order.status === 'SERVED'
 
   // If the restaurant has asked the customer to pay (pre or post), show a
   // prominent payment panel so the customer can settle the bill immediately.
@@ -100,15 +107,69 @@ export function OrderTracking({
     !isPaid &&
     (isPendingPayment || order.prePaymentRequested || order.postPaymentRequested)
   const acceptUpi = restaurant?.acceptUpi ?? true
-  const acceptCard = restaurant?.acceptCard ?? true
-  const acceptCounter = restaurant?.acceptCounter ?? true
+  const acceptCash = restaurant?.acceptCash ?? true
+  const upiId = restaurant?.upiId || null
 
-  const handlePay = async (method: 'UPI' | 'CARD' | 'WALLET') => {
+  // Post-payment popup: show a modal when the order is SERVED and not yet paid.
+  // The customer can dismiss it, but it auto-opens the first time the order
+  // reaches SERVED status (tracked via sessionStorage so it doesn't re-open
+  // on every refresh).
+  const [postPaymentPopupOpen, setPostPaymentPopupOpen] = useState(false)
+  const [paymentMethod, setPaymentMethod] = useState<'UPI' | 'QR' | 'CASH' | null>(null)
+  const [upiDeepLink, setUpiDeepLink] = useState<string | null>(null)
+  const [upiQrPayload, setUpiQrPayload] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (
+      isServed &&
+      !isPaid &&
+      !sessionStorage.getItem(`postpay-popup-${orderId}`)
+    ) {
+      setPostPaymentPopupOpen(true)
+      sessionStorage.setItem(`postpay-popup-${orderId}`, 'shown')
+    }
+  }, [isServed, isPaid, orderId])
+
+  const handlePay = async (method: 'UPI' | 'WALLET') => {
+    setPaying(true)
+    setPaymentMethod(method === 'UPI' ? 'UPI' : 'CASH')
+    try {
+      const init = await initiate.mutateAsync({ orderId, method })
+      if (method === 'UPI') {
+        setUpiDeepLink(init.upiDeepLink || null)
+        setUpiQrPayload(init.upiQrPayload || null)
+        // For UPI method: open the deep link to launch the customer's UPI app
+        if (init.upiDeepLink) {
+          window.location.href = init.upiDeepLink
+        }
+      }
+      // Simulate payment verification (in production this would be a webhook)
+      await new Promise((r) => setTimeout(r, init.verifyInMs || 3000))
+      await verify.mutateAsync({
+        paymentId: init.paymentId,
+        providerTxnId: init.providerTxnId,
+      })
+      toast.success('Payment successful!')
+      setPostPaymentPopupOpen(false)
+      setPaymentMethod(null)
+    } catch (err: any) {
+      toast.error(err.message || 'Payment failed')
+      setPaymentMethod(null)
+    } finally {
+      setPaying(false)
+    }
+  }
+
+  // For the inline payment panel (PENDING_PAYMENT or pre/post payment requested)
+  const handleInlinePay = async (method: 'UPI' | 'WALLET') => {
     setPaying(true)
     try {
       const init = await initiate.mutateAsync({ orderId, method })
+      if (method === 'UPI' && init.upiDeepLink) {
+        window.location.href = init.upiDeepLink
+      }
       toast.info('Connecting to payment gateway…')
-      await new Promise((r) => setTimeout(r, init.verifyInMs || 1500))
+      await new Promise((r) => setTimeout(r, init.verifyInMs || 3000))
       await verify.mutateAsync({
         paymentId: init.paymentId,
         providerTxnId: init.providerTxnId,
@@ -118,6 +179,13 @@ export function OrderTracking({
       toast.error(err.message || 'Payment failed')
     } finally {
       setPaying(false)
+    }
+  }
+
+  const copyUpiId = () => {
+    if (upiId) {
+      navigator.clipboard.writeText(upiId)
+      toast.success('UPI ID copied')
     }
   }
 
@@ -293,48 +361,80 @@ export function OrderTracking({
                   {formatINR(order.grandTotal)}
                 </span>
               </div>
+
+              {/* Payment method buttons — UPI / Scan QR / Cash */}
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                {acceptUpi && (
+                {acceptUpi && upiId && (
                   <Button
                     variant="outline"
                     className="bg-white"
                     disabled={paying}
-                    onClick={() => handlePay('UPI')}
+                    onClick={() => handleInlinePay('UPI')}
                   >
-                    Pay with UPI
+                    <Smartphone className="mr-2 h-4 w-4 text-orange-600" />
+                    Pay by UPI
                   </Button>
                 )}
-                {acceptCard && (
+                {acceptUpi && upiId && (
                   <Button
                     variant="outline"
                     className="bg-white"
                     disabled={paying}
-                    onClick={() => handlePay('CARD')}
+                    onClick={() => {
+                      // For QR: initiate UPI payment then show the QR code in a dialog
+                      setPaymentMethod('QR')
+                      handleInlinePay('UPI')
+                    }}
                   >
-                    Pay with Card
+                    <QrCode className="mr-2 h-4 w-4 text-purple-600" />
+                    Scan QR
                   </Button>
                 )}
-                {acceptCounter && (
+                {acceptCash && (
                   <Button
                     variant="outline"
                     className="bg-white"
                     disabled={paying}
-                    onClick={() => handlePay('WALLET')}
+                    onClick={() => {
+                      toast.info('Please hand the cash to your waiter.', {
+                        description: 'They will mark your order as paid.',
+                        duration: 5000,
+                      })
+                    }}
                   >
-                    Pay at counter
+                    <Banknote className="mr-2 h-4 w-4 text-emerald-600" />
+                    Pay in cash
                   </Button>
                 )}
               </div>
+
               {paying && (
                 <div className="flex items-center justify-center gap-2 text-sm text-amber-800">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   Processing payment…
                 </div>
               )}
-              <p className="text-center text-xs text-amber-700">
-                Prefer to pay in cash? Hand the cash to your waiter and they will
-                mark your order as paid.
-              </p>
+
+              {upiId && (
+                <div className="flex items-center justify-center gap-2 rounded-lg bg-white/60 px-3 py-2 text-xs">
+                  <span className="text-muted-foreground">UPI ID:</span>
+                  <code className="font-mono text-slate-700">{upiId}</code>
+                  <button
+                    onClick={copyUpiId}
+                    className="text-orange-600 hover:underline"
+                    aria-label="Copy UPI ID"
+                  >
+                    <Copy className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
+
+              {!upiId && acceptUpi && (
+                <p className="text-center text-xs text-amber-700">
+                  UPI payment is not available for this restaurant (no UPI ID configured).
+                  Please pay in cash.
+                </p>
+              )}
             </CardContent>
           </Card>
         </motion.div>
@@ -385,6 +485,148 @@ export function OrderTracking({
           Back to menu
         </Button>
       </div>
+
+      {/* Post-payment popup — auto-opens when order reaches SERVED status.
+          The customer can pay via UPI / Scan QR / Cash directly from the popup. */}
+      <Dialog open={postPaymentPopupOpen} onOpenChange={(o) => { if (!paying) setPostPaymentPopupOpen(o) }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Utensils className="h-5 w-5 text-purple-600" />
+              Enjoy your meal!
+            </DialogTitle>
+          </DialogHeader>
+
+          {paying ? (
+            <div className="flex flex-col items-center gap-3 py-6 text-center">
+              {paymentMethod === 'QR' && upiQrPayload ? (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    Scan this QR code with your UPI app to pay
+                    <strong> {formatINR(order.grandTotal)}</strong>
+                  </p>
+                  <div className="rounded-xl border-2 border-slate-200 bg-white p-4">
+                    <QrCodeDisplay payload={upiQrPayload} />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <Loader2 className="h-8 w-8 animate-spin text-orange-600" />
+                  <p className="text-sm text-muted-foreground">
+                    {paymentMethod === 'UPI'
+                      ? 'Your UPI app should have opened. Waiting for payment…'
+                      : 'Processing…'}
+                  </p>
+                </>
+              )}
+              {upiId && (
+                <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                  <span className="text-muted-foreground">UPI ID:</span>
+                  <code className="font-mono text-slate-700">{upiId}</code>
+                  <button
+                    onClick={copyUpiId}
+                    className="text-orange-600 hover:underline"
+                  >
+                    <Copy className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Your order has been served. Whenever you&apos;re ready, settle the
+                bill using one of the methods below.
+              </p>
+
+              <div className="flex items-center justify-between rounded-lg bg-slate-50 p-3">
+                <span className="text-sm font-medium text-slate-700">Amount due</span>
+                <span className="text-lg font-bold text-slate-900">
+                  {formatINR(order.grandTotal)}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2">
+                {acceptUpi && upiId && (
+                  <button
+                    onClick={() => handlePay('UPI')}
+                    className="flex items-center gap-3 rounded-xl border-2 border-slate-200 p-3 text-left transition-all hover:border-orange-400 hover:bg-orange-50/40"
+                  >
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-100">
+                      <Smartphone className="h-5 w-5 text-orange-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold">Pay by UPI</p>
+                      <p className="text-xs text-muted-foreground">
+                        Opens your UPI app with {formatINR(order.grandTotal)} pre-filled
+                      </p>
+                    </div>
+                  </button>
+                )}
+
+                {acceptUpi && upiId && (
+                  <button
+                    onClick={() => {
+                      setPaymentMethod('QR')
+                      handlePay('UPI')
+                    }}
+                    className="flex items-center gap-3 rounded-xl border-2 border-slate-200 p-3 text-left transition-all hover:border-purple-400 hover:bg-purple-50/40"
+                  >
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-100">
+                      <QrCode className="h-5 w-5 text-purple-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold">Scan QR code</p>
+                      <p className="text-xs text-muted-foreground">
+                        Scan with GPay / PhonePe / Paytm
+                      </p>
+                    </div>
+                  </button>
+                )}
+
+                {acceptCash && (
+                  <button
+                    onClick={() => {
+                      setPostPaymentPopupOpen(false)
+                      toast.info('Please hand the cash to your waiter.', {
+                        description: 'They will mark your order as paid.',
+                        duration: 5000,
+                      })
+                    }}
+                    className="flex items-center gap-3 rounded-xl border-2 border-slate-200 p-3 text-left transition-all hover:border-emerald-400 hover:bg-emerald-50/40"
+                  >
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100">
+                      <Banknote className="h-5 w-5 text-emerald-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold">Pay in cash</p>
+                      <p className="text-xs text-muted-foreground">
+                        Hand cash to your waiter
+                      </p>
+                    </div>
+                  </button>
+                )}
+              </div>
+
+              {!upiId && (
+                <p className="text-center text-xs text-amber-700">
+                  UPI / QR payment is not available for this restaurant (no UPI ID configured).
+                  Please pay in cash.
+                </p>
+              )}
+
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full"
+                onClick={() => setPostPaymentPopupOpen(false)}
+              >
+                I&apos;ll pay later
+              </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -396,4 +638,53 @@ function Row({ label, value }: { label: string; value: number }) {
       <span className="font-medium text-slate-700">{formatINR(value)}</span>
     </div>
   )
+}
+
+// ---------------------------------------------------------------------------
+// QR code display — generates a QR code from a string payload using the
+// `qrcode` library (already in the project for table QR codes).
+// ---------------------------------------------------------------------------
+function QrCodeDisplay({ payload }: { payload: string }) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    import('qrcode').then((QRCode) => {
+      QRCode.toDataURL(payload, {
+        width: 256,
+        margin: 1,
+        color: { dark: '#0f172a', light: '#ffffff' },
+      })
+        .then((url: string) => {
+          if (!cancelled) setDataUrl(url)
+        })
+        .catch(() => {
+          if (!cancelled) setError(true)
+        })
+    }).catch(() => {
+      if (!cancelled) setError(true)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [payload])
+
+  if (error) {
+    return (
+      <div className="flex h-48 w-48 items-center justify-center text-center text-xs text-red-600">
+        Failed to generate QR code.
+      </div>
+    )
+  }
+
+  if (!dataUrl) {
+    return (
+      <div className="flex h-48 w-48 items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  return <img src={dataUrl} alt="UPI payment QR code" className="h-48 w-48" />
 }

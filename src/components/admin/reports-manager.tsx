@@ -22,8 +22,6 @@ import {
 } from '@/components/ui/collapsible'
 import {
   ResponsiveContainer,
-  BarChart,
-  Bar,
   PieChart,
   Pie,
   Cell,
@@ -44,6 +42,7 @@ import {
   Calendar as CalendarIcon,
   IndianRupee,
   Package,
+  Percent,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -239,6 +238,7 @@ interface SalesRow {
   refund: number
   netSales: number
   tax: number
+  platformFee: number
   total: number
 }
 
@@ -268,9 +268,10 @@ function aggregateSalesByMonth(rows: SalesRow[]): SalesMonthGroup[] {
         refund: acc.refund + r.refund,
         netSales: acc.netSales + r.netSales,
         tax: acc.tax + r.tax,
+        platformFee: acc.platformFee + r.platformFee,
         total: acc.total + r.total,
       }),
-      { date: monthKey, orders: 0, grossSales: 0, discount: 0, refund: 0, netSales: 0, tax: 0, total: 0 },
+      { date: monthKey, orders: 0, grossSales: 0, discount: 0, refund: 0, netSales: 0, tax: 0, platformFee: 0, total: 0 },
     )
     groups.push({ monthKey, agg, days: sortedDays })
   }
@@ -287,6 +288,12 @@ function SalesReport({ queryString, groupBy }: { queryString: string; groupBy: G
       return json.data as {
         range: string
         rows: SalesRow[]
+        platformFeeBreakdown: {
+          totalCollected: number
+          totalPending: number
+          restaurantPortion: number
+          customerPortion: number
+        }
         summary: SalesRow & { aov: number }
       }
     },
@@ -350,34 +357,35 @@ function SalesReport({ queryString, groupBy }: { queryString: string; groupBy: G
   return (
     <div className="space-y-4">
       {/* Summary KPIs */}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <KpiCard label="Total revenue" value={formatINR(data.summary.total)} icon={<IndianRupee className="h-4 w-4" />} tone="orange" />
         <KpiCard label="Orders" value={String(data.summary.orders)} icon={<ShoppingBag className="h-4 w-4" />} tone="blue" />
         <KpiCard label="Avg order value" value={formatINR(data.summary.aov)} icon={<TrendingUp className="h-4 w-4" />} tone="green" />
         <KpiCard label="Tax collected" value={formatINR(data.summary.tax)} icon={<CreditCard className="h-4 w-4" />} tone="purple" />
+        <KpiCard label="Platform fee" value={formatINR(data.summary.platformFee)} icon={<Percent className="h-4 w-4" />} tone="red" />
       </div>
 
-      {/* Chart */}
+      {/* Platform fee breakdown */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Daily revenue trend</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="h-72 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-                <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#94a3b8" />
-                <YAxis tick={{ fontSize: 11 }} stroke="#94a3b8" />
-                <Tooltip
-                  contentStyle={{ fontSize: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}
-                  formatter={(v: number) => formatINR(v)}
-                />
-                <Legend wrapperStyle={{ fontSize: '12px' }} />
-                <Bar dataKey="net" name="Net sales" fill="#16A34A" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="total" name="Total (with tax)" fill="#EA580C" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+        <CardContent className="p-4">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+            <span className="font-semibold text-orange-700">Platform fee breakdown</span>
+            <span>
+              <span className="text-muted-foreground">Collected:</span>{' '}
+              <span className="font-bold">{formatINR(data.platformFeeBreakdown.totalCollected)}</span>
+            </span>
+            <span>
+              <span className="text-muted-foreground">Pending:</span>{' '}
+              <span className="font-bold">{formatINR(data.platformFeeBreakdown.totalPending)}</span>
+            </span>
+            <span>
+              <span className="text-muted-foreground">Restaurant portion:</span>{' '}
+              <span className="font-bold">{formatINR(data.platformFeeBreakdown.restaurantPortion)}</span>
+            </span>
+            <span>
+              <span className="text-muted-foreground">Customer portion:</span>{' '}
+              <span className="font-bold">{formatINR(data.platformFeeBreakdown.customerPortion)}</span>
+            </span>
           </div>
         </CardContent>
       </Card>
@@ -417,6 +425,7 @@ function SalesReport({ queryString, groupBy }: { queryString: string; groupBy: G
                   <SortableTh sortKey="refund" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Refund</SortableTh>
                   <SortableTh sortKey="netSales" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Net Sales</SortableTh>
                   <SortableTh sortKey="tax" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Tax</SortableTh>
+                  <SortableTh sortKey="platformFee" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Platform Fee</SortableTh>
                   <SortableTh sortKey="total" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Total</SortableTh>
                 </tr>
               </thead>
@@ -424,7 +433,7 @@ function SalesReport({ queryString, groupBy }: { queryString: string; groupBy: G
               {groupBy === 'month' ? (
                 sortedMonthGroups.length === 0 ? (
                   <tbody>
-                    <tr><td colSpan={8} className="py-8 text-center text-sm text-muted-foreground">No sales in this range</td></tr>
+                    <tr><td colSpan={9} className="py-8 text-center text-sm text-muted-foreground">No sales in this range</td></tr>
                   </tbody>
                 ) : (
                   sortedMonthGroups.map((group) => {
@@ -455,6 +464,7 @@ function SalesReport({ queryString, groupBy }: { queryString: string; groupBy: G
                               <Td align="right" className="text-red-600">{group.agg.refund > 0 ? `-${formatINR(group.agg.refund)}` : '—'}</Td>
                               <Td align="right" className="font-medium">{formatINR(group.agg.netSales)}</Td>
                               <Td align="right">{formatINR(group.agg.tax)}</Td>
+                              <Td align="right" className="text-orange-700">{group.agg.platformFee > 0 ? formatINR(group.agg.platformFee) : '—'}</Td>
                               <Td align="right" className="font-bold">{formatINR(group.agg.total)}</Td>
                             </tr>
                           </CollapsibleTrigger>
@@ -474,6 +484,7 @@ function SalesReport({ queryString, groupBy }: { queryString: string; groupBy: G
                                 <Td align="right" className="text-red-600">{day.refund > 0 ? `-${formatINR(day.refund)}` : '—'}</Td>
                                 <Td align="right" className="font-medium">{formatINR(day.netSales)}</Td>
                                 <Td align="right">{formatINR(day.tax)}</Td>
+                                <Td align="right" className="text-orange-700">{day.platformFee > 0 ? formatINR(day.platformFee) : '—'}</Td>
                                 <Td align="right" className="font-semibold">{formatINR(day.total)}</Td>
                               </tr>
                             </CollapsibleContent>
@@ -486,7 +497,7 @@ function SalesReport({ queryString, groupBy }: { queryString: string; groupBy: G
               ) : (
                 <tbody>
                   {sortedDayRows.length === 0 ? (
-                    <tr><td colSpan={8} className="py-8 text-center text-sm text-muted-foreground">No sales in this range</td></tr>
+                    <tr><td colSpan={9} className="py-8 text-center text-sm text-muted-foreground">No sales in this range</td></tr>
                   ) : (
                     sortedDayRows.map((r) => (
                       <tr key={r.date} className="border-b last:border-0 hover:bg-slate-50">
@@ -497,6 +508,7 @@ function SalesReport({ queryString, groupBy }: { queryString: string; groupBy: G
                         <Td align="right" className="text-red-600">{r.refund > 0 ? `-${formatINR(r.refund)}` : '—'}</Td>
                         <Td align="right" className="font-medium">{formatINR(r.netSales)}</Td>
                         <Td align="right">{formatINR(r.tax)}</Td>
+                        <Td align="right" className="text-orange-700">{r.platformFee > 0 ? formatINR(r.platformFee) : '—'}</Td>
                         <Td align="right" className="font-bold">{formatINR(r.total)}</Td>
                       </tr>
                     ))
@@ -513,6 +525,7 @@ function SalesReport({ queryString, groupBy }: { queryString: string; groupBy: G
                   <Td align="right" className="text-red-600">{data.summary.refund > 0 ? `-${formatINR(data.summary.refund)}` : '—'}</Td>
                   <Td align="right">{formatINR(data.summary.netSales)}</Td>
                   <Td align="right">{formatINR(data.summary.tax)}</Td>
+                  <Td align="right" className="text-orange-700">{data.summary.platformFee > 0 ? formatINR(data.summary.platformFee) : '—'}</Td>
                   <Td align="right">{formatINR(data.summary.total)}</Td>
                 </tr>
               </tfoot>
@@ -539,6 +552,7 @@ interface ProductRow {
   grossSales: number
   discount: number
   netSales: number
+  platformFee: number
 }
 
 function ProductsReport({ queryString }: { queryString: string }) {
@@ -553,7 +567,7 @@ function ProductsReport({ queryString }: { queryString: string }) {
         items: ProductRow[]
         topSelling: ProductRow[]
         topRevenue: ProductRow[]
-        summary: { totalItems: number; totalQuantity: number; totalGrossSales: number; totalDiscount: number; totalNetSales: number }
+        summary: { totalItems: number; totalQuantity: number; totalGrossSales: number; totalDiscount: number; totalNetSales: number; totalPlatformFee: number }
       }
     },
   })
@@ -572,11 +586,12 @@ function ProductsReport({ queryString }: { queryString: string }) {
   return (
     <div className="space-y-4">
       {/* Summary */}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <KpiCard label="Items sold" value={String(data.summary.totalQuantity)} icon={<Package className="h-4 w-4" />} tone="orange" />
         <KpiCard label="Unique items" value={String(data.summary.totalItems)} icon={<Package className="h-4 w-4" />} tone="blue" />
         <KpiCard label="Gross sales" value={formatINR(data.summary.totalGrossSales)} icon={<IndianRupee className="h-4 w-4" />} tone="green" />
         <KpiCard label="Net sales" value={formatINR(data.summary.totalNetSales)} icon={<TrendingUp className="h-4 w-4" />} tone="purple" />
+        <KpiCard label="Platform fee" value={formatINR(data.summary.totalPlatformFee)} icon={<Percent className="h-4 w-4" />} tone="red" />
       </div>
 
       {/* Top rankings */}
@@ -647,11 +662,12 @@ function ProductsReport({ queryString }: { queryString: string }) {
                   <SortableTh sortKey="grossSales" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Gross Sales</SortableTh>
                   <SortableTh sortKey="discount" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Discount</SortableTh>
                   <SortableTh sortKey="netSales" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Net Sales</SortableTh>
+                  <SortableTh sortKey="platformFee" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Platform Fee</SortableTh>
                 </tr>
               </thead>
               <tbody>
                 {sortedItems.length === 0 ? (
-                  <tr><td colSpan={6} className="py-8 text-center text-sm text-muted-foreground">No items sold in this range</td></tr>
+                  <tr><td colSpan={7} className="py-8 text-center text-sm text-muted-foreground">No items sold in this range</td></tr>
                 ) : (
                   sortedItems.map((item) => (
                     <tr key={item.menuItemId} className="border-b last:border-0 hover:bg-slate-50">
@@ -671,6 +687,7 @@ function ProductsReport({ queryString }: { queryString: string }) {
                       <Td align="right">{formatINR(item.grossSales)}</Td>
                       <Td align="right" className="text-red-600">{item.discount > 0 ? `-${formatINR(item.discount)}` : '—'}</Td>
                       <Td align="right" className="font-bold">{formatINR(item.netSales)}</Td>
+                      <Td align="right" className="text-orange-700">{item.platformFee > 0 ? formatINR(item.platformFee) : '—'}</Td>
                     </tr>
                   ))
                 )}
@@ -683,6 +700,7 @@ function ProductsReport({ queryString }: { queryString: string }) {
                   <Td align="right">{formatINR(data.summary.totalGrossSales)}</Td>
                   <Td align="right" className="text-red-600">{data.summary.totalDiscount > 0 ? `-${formatINR(data.summary.totalDiscount)}` : '—'}</Td>
                   <Td align="right">{formatINR(data.summary.totalNetSales)}</Td>
+                  <Td align="right" className="text-orange-700">{data.summary.totalPlatformFee > 0 ? formatINR(data.summary.totalPlatformFee) : '—'}</Td>
                 </tr>
               </tfoot>
             </table>
@@ -703,6 +721,7 @@ interface CategoryRow {
   icon: string | null
   quantity: number
   revenue: number
+  platformFee: number
   percentage: number
 }
 
@@ -717,6 +736,7 @@ function CategoriesReport({ queryString }: { queryString: string }) {
         range: string
         categories: CategoryRow[]
         totalRevenue: number
+        totalPlatformFee: number
         totalQuantity: number
       }
     },
@@ -743,13 +763,14 @@ function CategoriesReport({ queryString }: { queryString: string }) {
   return (
     <div className="space-y-4">
       {/* Summary */}
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-4">
         <KpiCard label="Total revenue" value={formatINR(data.totalRevenue)} icon={<IndianRupee className="h-4 w-4" />} tone="orange" />
         <KpiCard label="Items sold" value={String(data.totalQuantity)} icon={<Package className="h-4 w-4" />} tone="green" />
         <KpiCard label="Categories" value={String(data.categories.length)} icon={<PieChartIcon className="h-4 w-4" />} tone="purple" />
+        <KpiCard label="Platform fee" value={formatINR(data.totalPlatformFee)} icon={<Percent className="h-4 w-4" />} tone="red" />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 grid-cols-1">
         {/* Pie chart */}
         <Card>
           <CardHeader>
@@ -782,29 +803,6 @@ function CategoriesReport({ queryString }: { queryString: string }) {
             </div>
           </CardContent>
         </Card>
-
-        {/* Bar chart */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Revenue by category</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-72 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartData} layout="vertical" margin={{ left: 30, right: 30, top: 8, bottom: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
-                  <XAxis type="number" tick={{ fontSize: 11 }} stroke="#94a3b8" tickFormatter={(v) => `₹${(v / 1000).toFixed(0)}k`} />
-                  <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} stroke="#94a3b8" width={80} />
-                  <Tooltip
-                    contentStyle={{ fontSize: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}
-                    formatter={(v: number) => formatINR(v)}
-                  />
-                  <Bar dataKey="revenue" fill="#EA580C" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
       </div>
 
       {/* Table */}
@@ -820,13 +818,14 @@ function CategoriesReport({ queryString }: { queryString: string }) {
                   <SortableTh sortKey="name" activeKey={sortKey} direction={sortDir} onSort={toggleSort}>Category</SortableTh>
                   <SortableTh sortKey="quantity" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Qty</SortableTh>
                   <SortableTh sortKey="revenue" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Revenue</SortableTh>
+                  <SortableTh sortKey="platformFee" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Platform Fee</SortableTh>
                   <SortableTh sortKey="percentage" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right">Share</SortableTh>
                   <Th>Distribution</Th>
                 </tr>
               </thead>
               <tbody>
                 {sortedCategories.length === 0 ? (
-                  <tr><td colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No category sales in this range</td></tr>
+                  <tr><td colSpan={6} className="py-8 text-center text-sm text-muted-foreground">No category sales in this range</td></tr>
                 ) : (
                   sortedCategories.map((c) => {
                     // Stable colour based on the original category index in the API response
@@ -840,6 +839,7 @@ function CategoriesReport({ queryString }: { queryString: string }) {
                         </Td>
                         <Td align="right">{c.quantity}</Td>
                         <Td align="right" className="font-bold">{formatINR(c.revenue)}</Td>
+                        <Td align="right" className="text-orange-700">{c.platformFee > 0 ? formatINR(c.platformFee) : '—'}</Td>
                         <Td align="right">
                           <Badge variant="outline" className="font-bold">
                             {c.percentage}%
@@ -863,6 +863,7 @@ function CategoriesReport({ queryString }: { queryString: string }) {
                   <Td>Total</Td>
                   <Td align="right">{data.totalQuantity}</Td>
                   <Td align="right">{formatINR(data.totalRevenue)}</Td>
+                  <Td align="right" className="text-orange-700">{data.totalPlatformFee > 0 ? formatINR(data.totalPlatformFee) : '—'}</Td>
                   <Td align="right">100%</Td>
                   <Td>—</Td>
                 </tr>

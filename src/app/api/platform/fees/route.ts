@@ -240,6 +240,57 @@ export async function GET(req: NextRequest) {
     .filter((f) => f.status === 'REFUNDED')
     .reduce((s, f) => s + f.feeAmount, 0)
 
+  // ---------------------------------------------------------------------------
+  // OVERDUE DETECTION
+  // A restaurant is "overdue" if it has PENDING platform fees older than 30
+  // days. The super admin can then block the restaurant's QR scanning ability
+  // (the customer menu route will reject scans for blocked restaurants).
+  // ---------------------------------------------------------------------------
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+  const overdueFees = fees.filter(
+    (f) => f.status === 'PENDING' && f.createdAt < thirtyDaysAgo,
+  )
+  // Group overdue fees by restaurant
+  const overdueMap = new Map<
+    string,
+    {
+      restaurantId: string
+      restaurantName: string
+      slug: string
+      plan: string
+      pendingAmount: number
+      oldestPendingDate: Date
+      feeCount: number
+    }
+  >()
+  for (const f of overdueFees) {
+    const cur = overdueMap.get(f.restaurantId) || {
+      restaurantId: f.restaurantId,
+      restaurantName: f.restaurant?.name || 'Unknown',
+      slug: f.restaurant?.slug || '',
+      plan: f.restaurant?.plan || 'TRIAL',
+      pendingAmount: 0,
+      oldestPendingDate: f.createdAt,
+      feeCount: 0,
+    }
+    cur.pendingAmount += f.feeAmount
+    if (f.createdAt < cur.oldestPendingDate) {
+      cur.oldestPendingDate = f.createdAt
+    }
+    cur.feeCount += 1
+    overdueMap.set(f.restaurantId, cur)
+  }
+  const overdueTenants = Array.from(overdueMap.values())
+    .map((t) => ({
+      ...t,
+      pendingAmount: round2(t.pendingAmount),
+      oldestPendingDate: t.oldestPendingDate.toISOString(),
+      daysOverdue: Math.floor(
+        (Date.now() - t.oldestPendingDate.getTime()) / (24 * 60 * 60 * 1000),
+      ),
+    }))
+    .sort((a, b) => b.pendingAmount - a.pendingAmount)
+
   return NextResponse.json({
     success: true,
     data: {
@@ -273,6 +324,8 @@ export async function GET(req: NextRequest) {
         restaurant: f.restaurant,
         order: f.order,
       })),
+      // Restaurants with pending fees older than 30 days
+      overdueTenants,
     },
   })
 }

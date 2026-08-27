@@ -8,25 +8,25 @@ import {
   DrawerFooter,
 } from '@/components/ui/drawer'
 import { Button } from '@/components/ui/button'
-import { Minus, Plus, Trash2, ShoppingBag } from 'lucide-react'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Minus, Plus, Trash2, ShoppingBag, Smartphone, QrCode, Banknote, Loader2, CheckCircle2, Copy } from 'lucide-react'
 import { useCustomerCart, lineKeyOf } from '@/stores/customer-cart'
 import { Price } from '@/components/restaurant/price'
 import { VegBadge } from '@/components/restaurant/veg-badge'
 import { Separator } from '@/components/ui/separator'
 import { EmptyState } from '@/components/restaurant/loading-states'
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { usePlaceOrder } from '@/hooks/api'
+import { usePlaceOrder, useInitiatePayment, useVerifyPayment, api } from '@/hooks/api'
 import { toast } from 'sonner'
+import { motion, AnimatePresence } from 'framer-motion'
 import type { RestaurantInfo } from './types'
 import type { CartItem } from '@/lib/types'
 
@@ -37,6 +37,8 @@ interface Props {
   onCheckout: (orderId: string) => void
 }
 
+type PaymentMethod = 'UPI' | 'QR' | 'CASH' | null
+
 export function CartDrawer({ open, onOpenChange, restaurant, onCheckout }: Props) {
   const items = useCustomerCart((s) => s.items)
   const updateQuantity = useCustomerCart((s) => s.updateQuantity)
@@ -45,29 +47,64 @@ export function CartDrawer({ open, onOpenChange, restaurant, onCheckout }: Props
   const totals = useCustomerCart((s) => s.totals)
 
   const [confirmOpen, setConfirmOpen] = useState(false)
-  // Collect customer name & phone instead of an "order notes" textarea.
-  // The restaurant uses these to identify the customer and contact them if
-  // there's an issue with their order.
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
   const [touched, setTouched] = useState(false)
   const placeOrder = usePlaceOrder()
 
+  // Payment flow state
+  const [placedOrderId, setPlacedOrderId] = useState<string | null>(null)
+  const [selectedMethod, setSelectedMethod] = useState<PaymentMethod>(null)
+  const [paymentStep, setPaymentStep] = useState<'idle' | 'processing' | 'done'>('idle')
+  const [upiDeepLink, setUpiDeepLink] = useState<string | null>(null)
+  const [upiQrPayload, setUpiQrPayload] = useState<string | null>(null)
+  const [upiId, setUpiId] = useState<string | null>(null)
+  const initiate = useInitiatePayment()
+  const verify = useVerifyPayment()
+
   const t = totals(restaurant.taxRate, restaurant.serviceChargeRate)
 
-  // Basic client-side validation (the server re-validates with zod).
+  // Determine if pre-payment is required (from restaurant settings)
+  const requirePrePayment =
+    restaurant.settings?.allowPrePayment && restaurant.settings?.requirePrePayment
+
   const nameValid = customerName.trim().length >= 2
-  // 7–15 digits, optional leading +, spaces/dashes ignored
   const digits = customerPhone.replace(/[^\d]/g, '')
   const phoneValid = digits.length >= 7 && digits.length <= 15
   const formValid = nameValid && phoneValid
 
-  const handlePlace = async () => {
+  // Reset state when dialog closes
+  useEffect(() => {
+    if (!confirmOpen) {
+      // Small delay so the exit animation completes before resetting
+      const timer = setTimeout(() => {
+        if (paymentStep !== 'processing') {
+          setSelectedMethod(null)
+          setPaymentStep('idle')
+          setUpiDeepLink(null)
+          setUpiQrPayload(null)
+          setUpiId(null)
+        }
+      }, 300)
+      return () => clearTimeout(timer)
+    }
+  }, [confirmOpen, paymentStep])
+
+  // Step 1: Place the order (creates a PENDING_PAYMENT order if requirePrePayment is on)
+  const handlePlaceOrder = async (method: PaymentMethod) => {
     setTouched(true)
     if (!formValid) {
       toast.error('Please enter your name and phone number to place the order.')
       return
     }
+    if (!method) {
+      toast.error('Please choose a payment method.')
+      return
+    }
+
+    setSelectedMethod(method)
+    setPaymentStep('processing')
+
     try {
       // Generate idempotency key
       const idempotencyKey =
@@ -75,6 +112,7 @@ export function CartDrawer({ open, onOpenChange, restaurant, onCheckout }: Props
         `${Date.now()}-${Math.random().toString(36).slice(2, 14)}`
       sessionStorage.setItem('last-idem-key', idempotencyKey)
 
+      // Place the order
       const body = {
         tableToken:
           new URLSearchParams(window.location.search).get('table') || '',
@@ -86,25 +124,86 @@ export function CartDrawer({ open, onOpenChange, restaurant, onCheckout }: Props
           notes: i.notes,
         })),
         idempotencyKey,
-        // Required by the server now — name & phone are persisted on the order
-        // so the restaurant can reach the customer about pre-payment or status.
         customerInfo: {
           name: customerName.trim(),
           phone: customerPhone.trim(),
         },
       }
       const order = await placeOrder.mutateAsync(body)
-      // Clear idempotency key + cart + customer fields
       sessionStorage.removeItem('last-idem-key')
-      clear()
-      setCustomerName('')
-      setCustomerPhone('')
-      setTouched(false)
-      setConfirmOpen(false)
-      onOpenChange(false)
-      onCheckout(order.id)
+      setPlacedOrderId(order.id)
+
+      // Now handle payment based on the selected method
+      if (method === 'CASH') {
+        // For cash: the order is placed as PENDING_PAYMENT. The customer hands
+        // cash to the waiter, who marks it paid from the orders module. No
+        // online payment is initiated.
+        setPaymentStep('done')
+        toast.success('Order placed! Please hand the cash to your waiter.', {
+          description: 'Your order will be confirmed once the waiter marks it as paid.',
+          duration: 6000,
+        })
+        // Clear cart + close dialog after a short delay
+        setTimeout(() => {
+          clear()
+          setCustomerName('')
+          setCustomerPhone('')
+          setTouched(false)
+          setConfirmOpen(false)
+          onCheckout(order.id)
+        }, 2500)
+      } else if (method === 'UPI' || method === 'QR') {
+        // For UPI / Scan QR: initiate the payment, get the deep link + QR payload
+        try {
+          const init = await initiate.mutateAsync({ orderId: order.id, method: 'UPI' })
+          setUpiDeepLink(init.upiDeepLink || null)
+          setUpiQrPayload(init.upiQrPayload || null)
+          setUpiId(init.upiId || null)
+
+          // For UPI method: open the deep link to launch the customer's UPI app
+          if (method === 'UPI' && init.upiDeepLink) {
+            window.location.href = init.upiDeepLink
+          }
+
+          // For QR method: the QR code is displayed in the dialog (no auto-redirect)
+          // The customer scans it with their UPI app
+
+          // Simulate payment verification after a delay (in production this would
+          // be a webhook or poll loop checking the payment status)
+          await new Promise((r) => setTimeout(r, init.verifyInMs || 3000))
+          await verify.mutateAsync({
+            paymentId: init.paymentId,
+            providerTxnId: init.providerTxnId,
+          })
+          setPaymentStep('done')
+          toast.success('Payment successful! Your order is confirmed.', {
+            duration: 5000,
+          })
+          setTimeout(() => {
+            clear()
+            setCustomerName('')
+            setCustomerPhone('')
+            setTouched(false)
+            setConfirmOpen(false)
+            onCheckout(order.id)
+          }, 2000)
+        } catch (payErr: any) {
+          setPaymentStep('idle')
+          setSelectedMethod(null)
+          toast.error(payErr.message || 'Payment failed. Please try again.')
+        }
+      }
     } catch (err: any) {
+      setPaymentStep('idle')
+      setSelectedMethod(null)
       toast.error(err.message || 'Failed to place order')
+    }
+  }
+
+  const copyUpiId = () => {
+    if (upiId) {
+      navigator.clipboard.writeText(upiId)
+      toast.success('UPI ID copied')
     }
   }
 
@@ -144,7 +243,6 @@ export function CartDrawer({ open, onOpenChange, restaurant, onCheckout }: Props
                     >
                       <div className="h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-orange-50">
                         {item.image ? (
-                           
                           <img
                             src={item.image}
                             alt={item.name}
@@ -260,77 +358,295 @@ export function CartDrawer({ open, onOpenChange, restaurant, onCheckout }: Props
         </DrawerContent>
       </Drawer>
 
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent>
+      {/* Checkout dialog — name + phone + payment method selection */}
+      <Dialog open={confirmOpen} onOpenChange={(o) => { if (paymentStep !== 'processing') setConfirmOpen(o) }}>
+        <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Your details</DialogTitle>
-            <DialogDescription>
-              You're about to place an order for {t.itemCount} item(s) totalling{' '}
-              <strong>₹{t.grandTotal.toFixed(0)}</strong> on Table{' '}
-              {new URLSearchParams(window.location.search).get('table')}.
-              Please share your name & phone so the restaurant can confirm your
-              order and contact you if needed.
-            </DialogDescription>
+            <DialogTitle>
+              {paymentStep === 'done'
+                ? 'Order confirmed!'
+                : requirePrePayment
+                ? 'Checkout'
+                : 'Your details'}
+            </DialogTitle>
           </DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="customer-name">Your name *</Label>
-              <Input
-                id="customer-name"
-                placeholder="e.g. Arjun Patel"
-                value={customerName}
-                onChange={(e) => setCustomerName(e.target.value)}
-                maxLength={80}
-                autoFocus
-                aria-invalid={touched && !nameValid}
-              />
-              {touched && !nameValid && (
-                <p className="text-xs text-red-600">
-                  Please enter your name (min 2 characters).
-                </p>
-              )}
+
+          {/* Payment done — success screen */}
+          {paymentStep === 'done' ? (
+            <div className="flex flex-col items-center gap-3 py-6 text-center">
+              <motion.div
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ type: 'spring', stiffness: 500, damping: 25 }}
+                className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100"
+              >
+                <CheckCircle2 className="h-8 w-8 text-emerald-600" />
+              </motion.div>
+              <p className="text-sm text-muted-foreground">
+                {selectedMethod === 'CASH'
+                  ? 'Please hand the cash to your waiter. Your order will be confirmed shortly.'
+                  : 'Payment received. Redirecting to order tracking…'}
+              </p>
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="customer-phone">Phone number *</Label>
-              <Input
-                id="customer-phone"
-                inputMode="tel"
-                placeholder="e.g. +91 98765 43210"
-                value={customerPhone}
-                onChange={(e) => setCustomerPhone(e.target.value)}
-                maxLength={20}
-                aria-invalid={touched && !phoneValid}
-              />
-              {touched && !phoneValid ? (
-                <p className="text-xs text-red-600">
-                  Please enter a valid phone number (7–15 digits).
-                </p>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  We&apos;ll only use this to contact you about your order.
-                </p>
+          ) : paymentStep === 'processing' && selectedMethod === 'QR' && upiQrPayload ? (
+            /* QR code display — for "Scan QR" payment method */
+            <div className="flex flex-col items-center gap-3 py-4">
+              <p className="text-sm text-muted-foreground text-center">
+                Scan this QR code with your UPI app (GPay / PhonePe / Paytm) to pay
+                <strong> ₹{t.grandTotal.toFixed(0)}</strong>
+              </p>
+              <div className="rounded-xl border-2 border-slate-200 bg-white p-4">
+                <QrCodeDisplay payload={upiQrPayload} />
+              </div>
+              {upiId && (
+                <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                  <span className="text-muted-foreground">UPI ID:</span>
+                  <code className="font-mono text-slate-700">{upiId}</code>
+                  <button
+                    onClick={copyUpiId}
+                    className="text-orange-600 hover:underline"
+                  >
+                    <Copy className="h-3 w-3" />
+                  </button>
+                </div>
               )}
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Waiting for payment confirmation…
+              </div>
             </div>
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setConfirmOpen(false)}
-              disabled={placeOrder.isPending}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handlePlace}
-              disabled={placeOrder.isPending || !formValid}
-              className="bg-orange-600 text-white hover:bg-orange-700"
-            >
-              {placeOrder.isPending ? 'Placing…' : `Confirm · ₹${t.grandTotal.toFixed(0)}`}
-            </Button>
-          </DialogFooter>
+          ) : paymentStep === 'processing' && selectedMethod === 'UPI' ? (
+            /* UPI deep link launched — waiting for payment */
+            <div className="flex flex-col items-center gap-3 py-6 text-center">
+              <Smartphone className="h-12 w-12 text-orange-600" />
+              <p className="text-sm font-medium">
+                Your UPI app should have opened automatically.
+              </p>
+              <p className="text-xs text-muted-foreground">
+                If it didn&apos;t open, tap the button below to launch it manually.
+              </p>
+              {upiDeepLink && (
+                <Button
+                  onClick={() => window.location.href = upiDeepLink}
+                  className="bg-orange-600 text-white hover:bg-orange-700"
+                  size="sm"
+                >
+                  Open UPI app
+                </Button>
+              )}
+              {upiId && (
+                <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                  <span className="text-muted-foreground">UPI ID:</span>
+                  <code className="font-mono text-slate-700">{upiId}</code>
+                  <button
+                    onClick={copyUpiId}
+                    className="text-orange-600 hover:underline"
+                  >
+                    <Copy className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Waiting for payment confirmation…
+              </div>
+            </div>
+          ) : paymentStep === 'processing' && selectedMethod === 'CASH' ? (
+            <div className="flex flex-col items-center gap-3 py-6 text-center">
+              <Banknote className="h-12 w-12 text-emerald-600" />
+              <p className="text-sm font-medium">
+                Placing your order…
+              </p>
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            /* Default: name + phone + payment method selection */
+            <div className="space-y-4">
+              {/* Name + Phone inputs */}
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="customer-name">Your name *</Label>
+                  <Input
+                    id="customer-name"
+                    placeholder="e.g. Arjun Patel"
+                    value={customerName}
+                    onChange={(e) => setCustomerName(e.target.value)}
+                    maxLength={80}
+                    autoFocus
+                    aria-invalid={touched && !nameValid}
+                  />
+                  {touched && !nameValid && (
+                    <p className="text-xs text-red-600">
+                      Please enter your name (min 2 characters).
+                    </p>
+                  )}
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="customer-phone">Phone number *</Label>
+                  <Input
+                    id="customer-phone"
+                    inputMode="tel"
+                    placeholder="e.g. +91 98765 43210"
+                    value={customerPhone}
+                    onChange={(e) => setCustomerPhone(e.target.value)}
+                    maxLength={20}
+                    aria-invalid={touched && !phoneValid}
+                  />
+                  {touched && !phoneValid && (
+                    <p className="text-xs text-red-600">
+                      Please enter a valid phone number (7–15 digits).
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Payment method selection — selecting a method starts the flow */}
+              <div className="space-y-2">
+                <Label className="text-sm font-semibold">
+                  {requirePrePayment
+                    ? 'Choose payment method *'
+                    : 'Pay now (optional)'}
+                </Label>
+                {!requirePrePayment && (
+                  <p className="text-xs text-muted-foreground">
+                    You can pay now or after your order is served.
+                  </p>
+                )}
+                <div className="grid grid-cols-1 gap-2">
+                  {/* UPI */}
+                  <button
+                    onClick={() => handlePlaceOrder('UPI')}
+                    disabled={paymentStep === 'processing' || !formValid || !restaurant.upiId}
+                    className="flex items-center gap-3 rounded-xl border-2 border-slate-200 p-3 text-left transition-all hover:border-orange-400 hover:bg-orange-50/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-100">
+                      <Smartphone className="h-5 w-5 text-orange-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold">Pay by UPI</p>
+                      <p className="text-xs text-muted-foreground">
+                        {restaurant.upiId
+                          ? `Pay to ${restaurant.upiId}`
+                          : 'Not configured — choose another method'}
+                      </p>
+                    </div>
+                  </button>
+
+                  {/* Scan QR */}
+                  <button
+                    onClick={() => handlePlaceOrder('QR')}
+                    disabled={paymentStep === 'processing' || !formValid || !restaurant.upiId}
+                    className="flex items-center gap-3 rounded-xl border-2 border-slate-200 p-3 text-left transition-all hover:border-orange-400 hover:bg-orange-50/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-100">
+                      <QrCode className="h-5 w-5 text-purple-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold">Scan QR code</p>
+                      <p className="text-xs text-muted-foreground">
+                        {restaurant.upiId
+                          ? 'Scan with GPay / PhonePe / Paytm'
+                          : 'Not configured — choose another method'}
+                      </p>
+                    </div>
+                  </button>
+
+                  {/* Cash */}
+                  <button
+                    onClick={() => handlePlaceOrder('CASH')}
+                    disabled={paymentStep === 'processing' || !formValid}
+                    className="flex items-center gap-3 rounded-xl border-2 border-slate-200 p-3 text-left transition-all hover:border-emerald-400 hover:bg-emerald-50/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100">
+                      <Banknote className="h-5 w-5 text-emerald-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold">Pay in cash</p>
+                      <p className="text-xs text-muted-foreground">
+                        Hand cash to your waiter — they&apos;ll mark it paid
+                      </p>
+                    </div>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Footer — only show Cancel when not processing */}
+          {paymentStep !== 'processing' && paymentStep !== 'done' && (
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setConfirmOpen(false)}
+              >
+                Cancel
+              </Button>
+            </DialogFooter>
+          )}
         </DialogContent>
       </Dialog>
     </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// QR code display — generates a QR code from a string payload using the
+// `qrcode` library (already in the project for table QR codes).
+// ---------------------------------------------------------------------------
+
+function QrCodeDisplay({ payload }: { payload: string }) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    import('qrcode').then((QRCode) => {
+      QRCode.toDataURL(payload, {
+        width: 256,
+        margin: 1,
+        color: { dark: '#0f172a', light: '#ffffff' },
+      })
+        .then((url: string) => {
+          if (!cancelled) setDataUrl(url)
+        })
+        .catch(() => {
+          if (!cancelled) setError(true)
+        })
+    }).catch(() => {
+      if (!cancelled) setError(true)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [payload])
+
+  if (error) {
+    return (
+      <div className="flex h-48 w-48 items-center justify-center text-center text-xs text-red-600">
+        Failed to generate QR code.
+        <br />
+        Please use the UPI ID directly.
+      </div>
+    )
+  }
+
+  if (!dataUrl) {
+    return (
+      <div className="flex h-48 w-48 items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  return (
+    <img
+      src={dataUrl}
+      alt="UPI payment QR code"
+      className="h-48 w-48"
+    />
   )
 }
 

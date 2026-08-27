@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic'
 
 /**
  * Sales Report — main revenue report.
- * Columns per day: Date | Orders | Gross Sales | Discount | Refund | Net Sales | Tax | Total
+ * Columns per day: Date | Orders | Gross Sales | Discount | Refund | Net Sales | Tax | Platform Fee | Total
  */
 export async function GET(req: NextRequest) {
   const { user, error } = await requirePermission('reports.view')
@@ -42,6 +42,7 @@ export async function GET(req: NextRequest) {
       taxAmount: true,
       grandTotal: true,
       netTotal: true,
+      platformFeeAmount: true,
     },
     orderBy: { placedAt: 'asc' },
   })
@@ -57,6 +58,7 @@ export async function GET(req: NextRequest) {
       refund: number
       netSales: number
       tax: number
+      platformFee: number
       total: number
     }
   >()
@@ -71,6 +73,7 @@ export async function GET(req: NextRequest) {
       refund: 0,
       netSales: 0,
       tax: 0,
+      platformFee: 0,
       total: 0,
     })
   }
@@ -89,6 +92,7 @@ export async function GET(req: NextRequest) {
     cur.refund += o.refundAmount
     cur.netSales += Math.max(0, o.subtotal - o.discountAmount - o.refundAmount)
     cur.tax += o.taxAmount
+    cur.platformFee += o.platformFeeAmount
     cur.total += o.grandTotal - o.refundAmount
   }
 
@@ -99,6 +103,7 @@ export async function GET(req: NextRequest) {
     refund: +r.refund.toFixed(2),
     netSales: +r.netSales.toFixed(2),
     tax: +r.tax.toFixed(2),
+    platformFee: +r.platformFee.toFixed(2),
     total: +r.total.toFixed(2),
   }))
 
@@ -111,16 +116,47 @@ export async function GET(req: NextRequest) {
       refund: acc.refund + r.refund,
       netSales: acc.netSales + r.netSales,
       tax: acc.tax + r.tax,
+      platformFee: acc.platformFee + r.platformFee,
       total: acc.total + r.total,
     }),
-    { orders: 0, grossSales: 0, discount: 0, refund: 0, netSales: 0, tax: 0, total: 0 },
+    { orders: 0, grossSales: 0, discount: 0, refund: 0, netSales: 0, tax: 0, platformFee: 0, total: 0 },
   )
+
+  // Fetch actual PlatformFee records (joined to order so the date range
+  // matches the orders shown above). This lets us report the payer breakdown
+  // (restaurant portion vs customer portion) and the collection status.
+  const platformFees = await db.platformFee.findMany({
+    where: {
+      ...(restaurantId ? { restaurantId } : {}),
+      order: { placedAt: { gte: dateRange.from, lte: dateRange.to } },
+    },
+    select: {
+      feeAmount: true,
+      customerPortion: true,
+      restaurantPortion: true,
+      status: true,
+    },
+  })
+
+  const platformFeeBreakdown = {
+    totalCollected: +platformFees
+      .filter((f) => f.status === 'COLLECTED')
+      .reduce((s, f) => s + f.feeAmount, 0)
+      .toFixed(2),
+    totalPending: +platformFees
+      .filter((f) => f.status === 'PENDING')
+      .reduce((s, f) => s + f.feeAmount, 0)
+      .toFixed(2),
+    restaurantPortion: +platformFees.reduce((s, f) => s + f.restaurantPortion, 0).toFixed(2),
+    customerPortion: +platformFees.reduce((s, f) => s + f.customerPortion, 0).toFixed(2),
+  }
 
   return ok({
     range: dateRange.label,
     from: dateRange.from.toISOString(),
     to: dateRange.to.toISOString(),
     rows,
+    platformFeeBreakdown,
     summary: {
       ...summary,
       grossSales: +summary.grossSales.toFixed(2),
@@ -128,6 +164,7 @@ export async function GET(req: NextRequest) {
       refund: +summary.refund.toFixed(2),
       netSales: +summary.netSales.toFixed(2),
       tax: +summary.tax.toFixed(2),
+      platformFee: +summary.platformFee.toFixed(2),
       total: +summary.total.toFixed(2),
       aov: summary.orders > 0 ? +(summary.total / summary.orders).toFixed(2) : 0,
     },
