@@ -1,0 +1,64 @@
+// Take — food ordering app schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model MenuItem {
+  id          String   @id @default(cuid())
+  name        String
+  description String
+  price       Float
+  category    String
+  image       String
+  tags        String // comma-separated tags (sqlite has no array)
+  rating      Float   @default(4.8)
+  prepTime    Int     @default(15) // minutes
+  popular     Boolean @default(false)
+  available   Boolean @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  orderItems  OrderItem[]
+}
+
+model Order {
+  id            String      @id @default(cuid())
+  shortCode      String      @unique
+  status        String      @default("placed") // placed, preparing, on-the-way, delivered
+  customerName  String
+  address       String
+  phone         String
+  notes         String?
+  subtotal      Float
+  deliveryFee   Float       @default(0)
+  tax           Float       @default(0)
+  total         Float
+  paymentMethod String      @default("card")
+  etaMinutes    Int         @default(35)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  // timeline events stored as JSON string
+  timeline      String?
+
+  items         OrderItem[]
+}
+
+model OrderItem {
+  id          String   @id @default(cuid())
+  orderId     String
+  menuItemId  String?
+  name        String
+  price       Float
+  quantity    Int
+  image       String?
+
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItem    MenuItem? @relation(fields: [menuItemId], references: [id])
+}
