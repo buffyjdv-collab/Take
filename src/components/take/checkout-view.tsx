@@ -36,6 +36,7 @@ export function CheckoutView() {
   const setView = useTake((s) => s.setView)
   const setOrder = useTake((s) => s.setOrder)
   const clearCart = useTake((s) => s.clearCart)
+  const token = useTake((s) => s.activeToken)
 
   const [name, setName] = useState('')
   const [address, setAddress] = useState('')
@@ -69,7 +70,9 @@ export function CheckoutView() {
   const validate = () => {
     const e: Record<string, string> = {}
     if (!name.trim()) e.name = 'Required'
-    if (!address.trim() || address.trim().length < 6)
+    // Address is only required for the demo (delivery) flow. The QR-scan
+    // (dine-in) flow uses the table from the token, so address is optional.
+    if (!token && (!address.trim() || address.trim().length < 6))
       e.address = 'Enter a full address'
     if (!/^[0-9+\-\s()]{7,}$/.test(phone.trim())) e.phone = 'Enter a valid phone'
     if (payment === 'card') {
@@ -88,50 +91,78 @@ export function CheckoutView() {
       // simulate payment gateway delay
       await new Promise((r) => setTimeout(r, 1100))
 
-      const payload = {
-        customerName: name.trim(),
-        address: address.trim(),
-        phone: phone.trim(),
-        notes: notes.trim() || undefined,
-        paymentMethod: payment,
-        items: cart.map((c) => ({
-          id: c.id,
-          name: c.name,
-          price: c.price,
-          quantity: c.quantity,
-          image: c.image,
-        })),
-      }
-
-      const res = await fetch('/api/orders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-
-      if (!res.ok) {
+      if (token) {
+        // ---- QR-scan flow: place a real platform Order for this table ----
+        const payload = {
+          tableToken: token,
+          items: cart.map((c) => ({ menuItemId: c.id, quantity: c.quantity })),
+          customerInfo: {
+            name: name.trim(),
+            phone: phone.trim(),
+            email: '',
+          },
+          idempotencyKey: `take-${Date.now()}-${Math.random()
+            .toString(36)
+            .slice(2, 10)}`,
+          notes: notes.trim() || undefined,
+        }
+        const res = await fetch('/api/customer/order', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
         const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Failed to place order')
+        if (!res.ok || !data?.success) {
+          throw new Error(data?.error || 'Failed to place order')
+        }
+        const order = data.data
+        // Persist so the tracking page can ALWAYS load it (even on refresh).
+        setOrder({
+          id: order.id,
+          shortCode: order.orderNumber || order.id.slice(-5).toUpperCase(),
+          total: order.grandTotal ?? order.netTotal ?? subtotal,
+          createdAt: order.placedAt || order.createdAt || new Date().toISOString(),
+        })
+      } else {
+        // ---- Demo flow: place a ConsumerOrder ----
+        const payload = {
+          customerName: name.trim(),
+          address: address.trim(),
+          phone: phone.trim(),
+          notes: notes.trim() || undefined,
+          paymentMethod: payment,
+          items: cart.map((c) => ({
+            id: c.id,
+            name: c.name,
+            price: c.price,
+            quantity: c.quantity,
+            image: c.image,
+          })),
+        }
+        const res = await fetch('/api/orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}))
+          throw new Error(data.error || 'Failed to place order')
+        }
+        const data = await res.json()
+        const order = data.order
+        setOrder({
+          id: order.id,
+          shortCode: order.shortCode,
+          total: order.total,
+          createdAt: order.createdAt,
+        })
       }
 
-      const data = await res.json()
-      const order = data.order
-
-      // THE FIX: persist the order so the tracking page can ALWAYS load it,
-      // even after a page refresh or accidental navigation.
-      setOrder({
-        id: order.id,
-        shortCode: order.shortCode,
-        total: order.total,
-        createdAt: order.createdAt,
-      })
       clearCart()
-
       toast({
         title: 'Payment successful!',
-        description: `Order ${order.shortCode} confirmed.`,
+        description: 'Your order has been confirmed.',
       })
-
       setView('tracking')
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Payment failed'

@@ -25,8 +25,13 @@ type TakeState = {
   cart: CartItem[]
   currentOrderId: string | null
   lastOrder: PlacedOrder | null
+  // When the app is opened via a QR scan, this is the table's qrCodeToken.
+  // It scopes menu fetch + order placement to that restaurant/table. When
+  // null (the /consumer-demo route), the demo's own Consumer* tables are used.
+  activeToken: string | null
 
   setView: (v: View) => void
+  setActiveToken: (t: string | null) => void
   addToCart: (item: Omit<CartItem, 'quantity'>, qty?: number) => void
   decrement: (id: string) => void
   removeFromCart: (id: string) => void
@@ -49,8 +54,10 @@ export const useTake = create<TakeState>()(
       cart: [],
       currentOrderId: null,
       lastOrder: null,
+      activeToken: null,
 
       setView: (v) => set({ view: v }),
+      setActiveToken: (t) => set({ activeToken: t }),
 
       addToCart: (item, qty = 1) =>
         set((s) => {

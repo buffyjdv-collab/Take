@@ -22,7 +22,7 @@ import {
   RotateCcw,
 } from 'lucide-react'
 import { useTake } from '@/store/take'
-import { fmtMoney, fmtTime, timeAgo, STAGE_META, stageIndex } from '@/lib/take'
+import { fmtMoney, fmtTime, timeAgo, STAGE_META, stageIndex, platformStatusToStage, platformTimeline } from '@/lib/take'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -68,6 +68,7 @@ export function TrackingView() {
   const setView = useTake((s) => s.setView)
   const setOrder = useTake((s) => s.setOrder)
   const clearOrder = useTake((s) => s.clearOrder)
+  const token = useTake((s) => s.activeToken)
 
   // If we have no order id at all, show the "find order" screen.
   // This is the graceful fallback so the page ALWAYS renders something
@@ -79,6 +80,7 @@ export function TrackingView() {
   return (
     <Tracker
       orderId={currentOrderId || lastOrder?.id || ''}
+      token={token}
       onBack={() => setView('menu')}
       onClear={() => {
         clearOrder()
@@ -93,10 +95,12 @@ export function TrackingView() {
 /* ------------------------------------------------------------------ */
 function Tracker({
   orderId,
+  token,
   onBack,
   onClear,
 }: {
   orderId: string
+  token: string | null
   onBack: () => void
   onClear: () => void
 }) {
@@ -108,20 +112,58 @@ function Tracker({
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}`)
-      if (!res.ok) {
+      let o: Order
+      if (token) {
+        // QR-scan flow: fetch the platform Order and map it onto the Take
+        // tracking shape (status → stage, timestamps → timeline).
+        const res = await fetch(`/api/customer/order/${encodeURIComponent(orderId)}`)
         const d = await res.json().catch(() => ({}))
-        throw new Error(d.error || 'Could not load your order')
+        if (!res.ok || !d?.success) {
+          throw new Error(d?.error || 'Could not load your order')
+        }
+        const p = d.data
+        o = {
+          id: p.id,
+          shortCode: p.orderNumber || p.id.slice(-5).toUpperCase(),
+          status: platformStatusToStage(p.status),
+          customerName: p.customerName || '',
+          address: p.table?.number ? `Table ${p.table.number}` : '',
+          phone: p.customerPhone || '',
+          notes: p.notes,
+          subtotal: p.subtotal,
+          deliveryFee: 0,
+          tax: p.taxAmount,
+          total: p.grandTotal ?? p.netTotal ?? p.subtotal,
+          paymentMethod: (p.paymentMethod || 'card').toLowerCase(),
+          etaMinutes: 25,
+          createdAt: p.placedAt || p.createdAt,
+          updatedAt: p.updatedAt,
+          timeline: platformTimeline(p),
+          items: (p.items || []).map((it: any) => ({
+            id: it.id,
+            name: it.menuItemName,
+            price: it.unitPrice,
+            quantity: it.quantity,
+            image: it.menuItemImage || it.menuItem?.image || null,
+          })),
+        }
+      } else {
+        const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}`)
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}))
+          throw new Error(d.error || 'Could not load your order')
+        }
+        const data = await res.json()
+        o = data.order
       }
-      const data = await res.json()
-      setOrder(data.order)
+      setOrder(o)
       setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong')
     } finally {
       setLoading(false)
     }
-  }, [orderId])
+  }, [orderId, token])
 
   useEffect(() => {
     load()

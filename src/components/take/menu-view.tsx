@@ -8,7 +8,7 @@ import { useTake } from '@/store/take'
 import { MenuCard } from './menu-card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import { fmtMoney } from '@/lib/take'
+import { fmtMoney, mapPlatformMenuItem } from '@/lib/take'
 
 type MenuItem = {
   id: string
@@ -30,18 +30,40 @@ export function MenuView() {
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [restaurantName, setRestaurantName] = useState<string | null>(null)
+  const token = useTake((s) => s.activeToken)
 
   useEffect(() => {
     let alive = true
-    fetch('/api/menu')
+    // QR-scan flow: read the real restaurant menu (all categories + items the
+    // admin manages) via the platform's /api/customer/menu endpoint, then map
+    // it onto the Take menu shape. Demo flow (/consumer-demo, no token): use
+    // the demo's own /api/menu endpoint.
+    const url = token
+      ? `/api/customer/menu?table=${encodeURIComponent(token)}`
+      : '/api/menu'
+    fetch(url)
       .then(async (r) => {
         if (!r.ok) throw new Error('Failed to load menu')
         return r.json()
       })
       .then((d) => {
         if (!alive) return
-        setItems(d.items)
-        setCategories(d.categories)
+        if (token) {
+          // Platform response: { success, data: { restaurant, categories, items } }
+          const data = d.data || {}
+          const mappedItems = (data.items || [])
+            .map(mapPlatformMenuItem)
+            .filter((i: MenuItem) => i.available)
+          const cats = (data.categories || [])
+            .map((c: { name: string }) => c.name)
+          setItems(mappedItems)
+          setCategories(['All', ...Array.from(new Set(cats))])
+          setRestaurantName(data.restaurant?.name || null)
+        } else {
+          setItems(d.items)
+          setCategories(d.categories)
+        }
         setError(null)
       })
       .catch((e) => alive && setError(e.message))
@@ -49,7 +71,7 @@ export function MenuView() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [token])
 
   const filtered = useMemo(() => {
     return items.filter((i) => {
@@ -70,7 +92,7 @@ export function MenuView() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-10 sm:px-6">
-      <Hero />
+      <Hero restaurantName={restaurantName} />
 
       {/* Search + categories */}
       <div className="sticky top-[64px] z-30 -mx-4 mt-5 mb-5 bg-background/85 px-4 py-3 backdrop-blur-md sm:top-16 sm:mx-0 sm:rounded-2xl sm:border sm:border-border sm:px-4 sm:shadow-soft">
@@ -164,7 +186,7 @@ export function MenuView() {
   )
 }
 
-function Hero() {
+function Hero({ restaurantName }: { restaurantName?: string | null }) {
   return (
     <section className="relative mt-5 overflow-hidden rounded-3xl border border-border brand-gradient-soft">
       <div className="absolute -right-10 -top-10 h-44 w-44 rounded-full bg-brand/20 blur-3xl" />
@@ -175,9 +197,19 @@ function Hero() {
             <Sparkles size={12} /> Fresh today
           </span>
           <h1 className="mt-3 text-3xl font-extrabold leading-[1.05] tracking-tight sm:text-4xl md:text-5xl">
-            Crave it.
-            <br />
-            <span className="text-brand-gradient">Take it.</span>
+            {restaurantName ? (
+              <>
+                {restaurantName}
+                <br />
+                <span className="text-brand-gradient">Scan & order</span>
+              </>
+            ) : (
+              <>
+                Crave it.
+                <br />
+                <span className="text-brand-gradient">Take it.</span>
+              </>
+            )}
           </h1>
           <p className="mt-3 max-w-sm text-sm text-muted-foreground sm:text-base">
             Order from the neighbourhood's best kitchen. Real-time tracking,
