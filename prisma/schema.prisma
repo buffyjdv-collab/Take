@@ -897,3 +897,73 @@ model PlatformFee {
   @@index([status])
   @@index([createdAt])
 }
+
+// ------------------------------------------------------------------
+// Take — consumer ordering demo (self-contained module)
+// Mounted at /consumer-demo. Names are prefixed with `Consumer` to avoid
+// colliding with the platform's existing MenuItem/Order/OrderItem models.
+// Run `bun run db:push` after merging to create these tables, then seed
+// with `bun run prisma/seed.ts`.
+// ------------------------------------------------------------------
+
+model ConsumerMenuItem {
+  id          String   @id @default(cuid())
+  name        String
+  description String
+  price       Float
+  category    String
+  image       String
+  tags        String[]
+  rating      Float    @default(4.8)
+  prepTime    Int      @default(15)
+  popular     Boolean  @default(false)
+  available   Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  orderItems  ConsumerOrderItem[]
+
+  @@index([category])
+  @@index([popular])
+  @@index([available])
+}
+
+model ConsumerOrder {
+  id            String   @id @default(cuid())
+  shortCode      String   @unique
+  status        String   @default("placed")
+  customerName  String
+  address       String
+  phone         String
+  notes         String?
+  subtotal      Float
+  deliveryFee   Float    @default(0)
+  tax           Float    @default(0)
+  total         Float
+  paymentMethod String  @default("card")
+  etaMinutes    Int     @default(35)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  timeline      String?
+
+  items         ConsumerOrderItem[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ConsumerOrderItem {
+  id          String   @id @default(cuid())
+  orderId     String
+  menuItemId  String?
+  name        String
+  price       Float
+  quantity    Int
+  image       String?
+
+  order       ConsumerOrder    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItem    ConsumerMenuItem? @relation(fields: [menuItemId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+}
